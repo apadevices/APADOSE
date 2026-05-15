@@ -56,6 +56,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Examples 01–02: solenoid valve note added near `setPumpRange()` explaining time-proportional mode
 - All 10 examples: one-directional pH warning added after `setDosingType()` — pH+ and pH−
   must not run simultaneously on the same pool
+- `README.md` Safety Systems: filtration interlock and filter-off notification documented as
+  requiring a `FilterCallback`; startup blackout and daily dose limit documented as opt-in
+  `begin()` parameters; "ORP ceiling" row expanded to "Setpoint range enforcement" covering
+  both pH (6.8–7.8) and ORP (400–850 mV) bounds
+- `README.md` Setup Order: `begin()` parameter table added covering both overloads, all four
+  parameters with types, defaults, and required vs optional marking
+- `README.md` Diagnostic output: Arduino IDE enable path documented — uncomment the prepared
+  `// #define APA_DOSE_DEBUG` line in `APADOSE.h`
+- `README.md` Multi-Pump section: `triggerManualDose()` subsection added with button-triggered
+  and RTC-scheduled examples; `triggerPrime()` subsection added explaining maintenance use,
+  safety guard bypass, and post-prime 5-minute rest
+- `README.md` Key Features: expanded from 11 to 21 entries organised in five categories
+  (proportional control, safety, flexibility, monitoring, engineering); section moved to top
+  of README for immediate visibility
+- `README.md` APA Ecosystem: expanded with APAPHX-Board v2 hardware layer, full stack table,
+  and marketing description positioning APA Devices against proprietary pool controllers
+- `README.md` temperature compensation note: updated to reference Passco 2001 formula used
+  by APAPHX and APAPHX2 libraries; same correction applied to `docs/API.md`
+- `docs/API.md` `begin()` signatures: `maxDailyDoses` parameter added to both overloads
+  (was present in the parameter table but missing from the function signatures)
+- `docs/API.md` EEPROM layout: write method corrected from `EEPROM.update()` to
+  `EEPROM.write()` to match the 3.3.0 fix for ESP32/ESP8266 compatibility
 
 ---
 
