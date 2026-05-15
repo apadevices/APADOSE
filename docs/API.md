@@ -187,8 +187,8 @@ All parameters optional. **Call before `begin()`** to receive startup messages.
 
 ### `begin()`
 ```cpp
-bool begin(SensorReadCallback sensorReader, FilterCallback filter, uint8_t blackoutMinutes = 0);
-bool begin(SensorReadCallback sensorReader, uint8_t blackoutMinutes = 0);
+bool begin(SensorReadCallback sensorReader, FilterCallback filter, uint8_t blackoutMinutes = 0, uint8_t maxDailyDoses = 0);
+bool begin(SensorReadCallback sensorReader, uint8_t blackoutMinutes = 0, uint8_t maxDailyDoses = 0);
 ```
 
 Connects the library to external hardware and activates EEPROM restore.
@@ -315,7 +315,7 @@ This prevents back-to-back injection of incompatible chemicals — for example, 
 
 The library validates every sensor reading with `isfinite()`.
 
-> **Temperature compensation:** pH sensor readings are temperature-dependent (~0.003 pH/°C). The APAPHX2_ADS1115 library applies NTC temperature correction before returning the value. If using a different sensor library, apply temperature compensation inside your sensor callback so APA-Dose always receives a corrected reading. If the callback returns NaN or infinity:
+> **Temperature compensation:** pH sensor readings are temperature-dependent (~0.003 pH/°C). The **APAPHX** and **APAPHX2** libraries apply the Passco 2001 formula to deliver a stable, temperature-compensated value automatically. If using a different sensor library, apply temperature compensation inside your sensor callback so APA-Dose always receives a corrected reading. If the callback returns NaN or infinity:
 - The first bad reading sends `"Sensor:bad value"` once via `onStatusMessage`
 - The last known good value is kept — dosing and safety checks continue against it
 - The flag clears automatically when a finite value is received; the message fires again on the next transition to bad
@@ -550,7 +550,7 @@ Address 192+     APA-Dose configuration (this library)
 Address 208+     available for additional pump instances (space by sizeof(ConfigData) ≈ 20 bytes)
 ```
 
-Write method: `EEPROM.update()` — skips unchanged bytes.  
+Write method: `EEPROM.write()` — works on all supported platforms; ESP8266/ESP32 `EEPROM.begin()` and `EEPROM.commit()` are called automatically.  
 Validation: 2-byte magic number `0xABCD` + version byte + additive checksum.  
 On invalid EEPROM: factory defaults loaded and written automatically.
 
