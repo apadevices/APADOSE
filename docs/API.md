@@ -73,7 +73,7 @@ Call setup methods in this order — order matters on first boot:
 ```
 1. setPumpRange()        calibrate motor dead band
 2. setPumpFlowRate()     optional — pump output at max PWM in mL/min (default 450)
-3. setDosingType()       set chemical type (REQUIRED for CL pumps — call before begin)
+3. setDosingType()       REQUIRED for CL pumps and pH− pumps — call before begin() on first boot
 4. setRTCCallback()      optional — RTC for scheduling
 5. setDosingWindow()     optional — restrict dosing hours
 6. setCallbacks()        register alarm/status callbacks BEFORE begin()
