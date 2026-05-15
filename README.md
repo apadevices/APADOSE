@@ -109,28 +109,28 @@ Every automatic dose passes through six phases:
 ```
   ┌─────────────────────────────────────────────────────────┐
   │                                                         │
-  │  ① SAMPLE BEFORE     2 readings × 30 s apart           │
+  │  ① SAMPLE BEFORE     2 readings × 30 s apart            │
   │        │             averaged → before-dose value       │
-  │        ▼                                               │
+  │        ▼                                                │
   │  ② CALCULATE PULSE                                      │
   │        │   error %  =  |setpoint − reading| / band      │
   │        │   PWM      ∝  error %   (proportional)         │
   │        │   time     ∝  error %   (2 – 11 s)             │
   │        │   rest     ∝  error %   (5 – 20 min)           │
-  │        ▼                                               │
+  │        ▼                                                │
   │  ③ RUN PUMP          analogWrite(PWM) for pulse time    │
-  │        │                                               │
-  │        ▼                                               │
+  │        │                                                │
+  │        ▼                                                │
   │  ④ REST              chemical mixes into pool water     │
   │        │             (5 – 20 min, proportional to dose) │
-  │        ▼                                               │
-  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart           │
+  │        ▼                                                │
+  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart            │
   │        │             averaged → after-dose value        │
-  │        ▼                                               │
-  │  ⑥ EVALUATE FEEDBACK  did the sensor move correctly?   │
+  │        ▼                                                │
+  │  ⑥ EVALUATE FEEDBACK  did the sensor move correctly?    │
   │        ├─ yes ──► reset fail counter, repeat cycle      │
   │        └─ no  ──► boost next dose (+30 % / +50 % PWM)   │
-  │                   alarm after 3 consecutive failures     │
+  │                   alarm after 3 consecutive failures    │
   └────────────────────────┬────────────────────────────────┘
                            │ repeat
                            ▼
