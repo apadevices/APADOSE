@@ -78,7 +78,9 @@ void setup() {
   phPump.setCallbacks(onAlarm, onAlarmCleared, onStatus);
 
   // Sensor callback + filter interlock + 20 min blackout + max 6 doses/day
-  phPump.begin(getpH, filterRunning, 20, 6);
+  // Returns false when EEPROM was corrupt — defaults are loaded automatically, safe to continue.
+  if (!phPump.begin(getpH, filterRunning, 20, 6))
+    Serial.println("[WARN] EEPROM invalid — defaults loaded.");
 }
 
 void loop() {
