@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.3.0
+ * Version: 3.4.2
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -58,11 +58,11 @@ ApaDose::ApaDose(uint8_t pumpPin, int eepromAddress)
     dosingType(DOSE_PH_PLUS),
     flags{},
     dosingStartTime(0), lastDosingEnd(0),
-    filterOffStart(0),
+    filterOffStart(0), externalStopClearedAt(0),
     sensorValue(PH_SETPOINT_DEFAULT),
     onAlarmTriggered(nullptr), onAlarmCleared(nullptr), onStatusMessage(nullptr),
-    readSensor(nullptr), filterPumpRunning(nullptr), readRTCTime(nullptr),
-    startupBlackoutMs(0), startupTime(0),
+    readSensor(nullptr), filterPumpRunning(nullptr), externalStop(nullptr), readRTCTime(nullptr),
+    startupBlackoutMinutes(0), startupTime(0),
     dosingWindowStart(0), dosingWindowEnd(0),
     lastKnownDay(255), dailyDoseCount(0), maxDailyDoses(0),
     lastSensorRead(0), lastGoodSensorTime(0),
@@ -95,19 +95,18 @@ bool ApaDose::begin(SensorReadCallback sensorReader, FilterCallback filter,
   EEPROM.begin(max(512, eepromBaseAddress + (int)sizeof(ConfigData)));
 #endif
 
-  blackoutMinutes   = constrain(blackoutMinutes, 0, 60);
-  startupBlackoutMs = (unsigned long)blackoutMinutes * 60UL * 1000UL;
-  if (startupBlackoutMs > 0) {
+  startupBlackoutMinutes = constrain(blackoutMinutes, 0, 60);
+  if (startupBlackoutMinutes > 0) {
     startupTime               = millis();
     flags.blackoutMessageSent = false;
   }
 
-  flags.configurationValid = loadConfiguration();
-  if (!flags.configurationValid) {
+  bool eepromValid = loadConfiguration();
+  if (!eepromValid) {
     resetToDefaults();
     saveConfiguration();
-    flags.configurationValid = true;
   }
+  flags.configurationValid = true;
 
   // Prime sensorValue to setpoint so checkSafetyConditions() sees zero error on the
   // very first update() call before any real reading has been received.
@@ -124,7 +123,7 @@ bool ApaDose::begin(SensorReadCallback sensorReader, FilterCallback filter,
     sendStatus(onStatusMessage, F("No sensor-manual"));
   }
 
-  return true;
+  return eepromValid;
 }
 
 bool ApaDose::begin(SensorReadCallback sensorReader,
@@ -155,6 +154,10 @@ void ApaDose::setDosingWindow(uint8_t startHour, uint8_t endHour) {
   dosingWindowStart         = startHour;
   dosingWindowEnd           = endHour;
   flags.dosingWindowEnabled = true;
+}
+
+void ApaDose::setExternalStopCallback(ExternalStopCallback cb) {
+  externalStop = cb;
 }
 
 void ApaDose::setPumpRange(uint8_t minPWM, uint8_t maxPWM) {
@@ -231,15 +234,42 @@ void ApaDose::manageProportionalDosing() {
     }
   }
 
-  if (startupBlackoutMs > 0) {
-    if ((now - startupTime) < startupBlackoutMs) {
+  if (externalStop != nullptr) {
+    if (externalStop()) {
+      externalStopClearedAt = 0;  // cancel any pending resume timer
+      if (flags.dosingActive) {
+        stopDosingPulse();
+        feedback.phase = FB_IDLE;
+        sendStatus(onStatusMessage, F("Stop:ext request"));
+        flags.externalStopSent = true;
+      } else if (!flags.externalStopSent) {
+        sendStatus(onStatusMessage, F("ExtStop active"));
+        flags.externalStopSent = true;
+      }
+      return;
+    } else {
+      if (flags.externalStopSent) {
+        sendStatus(onStatusMessage, F("ExtStop cleared"));
+        flags.externalStopSent = false;
+        externalStopClearedAt = now;
+      }
+      if (externalStopClearedAt != 0) {
+        if (now - externalStopClearedAt < EXTERNAL_STOP_RESUME_MS) return;
+        sendStatus(onStatusMessage, F("Dosing resumed"));
+        externalStopClearedAt = 0;
+      }
+    }
+  }
+
+  if (startupBlackoutMinutes > 0) {
+    if ((now - startupTime) < (unsigned long)startupBlackoutMinutes * 60000UL) {
       if (!flags.blackoutMessageSent) {
         sendStatus(onStatusMessage, F("Blackout active"));
         flags.blackoutMessageSent = true;
       }
       return;
     }
-    startupBlackoutMs = 0;
+    startupBlackoutMinutes = 0;
     sendStatus(onStatusMessage, F("Dosing enabled"));
   }
 
@@ -354,6 +384,8 @@ void ApaDose::manageFeedbackSampling() {
 
           if (flags.dosingActive) return;
           if (filterPumpRunning != nullptr && !filterPumpRunning()) return;
+          if (externalStop      != nullptr && externalStop())       return;
+          if (externalStopClearedAt != 0)                           return;
           DosingPulse pulse = calculateProportionalPulse();
           if (pulse.pwmIntensity > 0) startDosingPulse(pulse);
         } else {
@@ -725,6 +757,8 @@ bool ApaDose::triggerManualDose(unsigned long durationMs, unsigned long restMs) 
   if (durationMs == 0) return false;
   if (maxDailyDoses > 0 && dailyDoseCount >= maxDailyDoses) return false;
   if (filterPumpRunning != nullptr && !filterPumpRunning()) return false;
+  if (externalStop      != nullptr && externalStop())       return false;
+  if (externalStopClearedAt != 0)                           return false;
   if (lastAnyDoseEnd != 0 && millis() - lastAnyDoseEnd < INTER_PUMP_LOCKOUT_MS) return false;
 
   if (durationMs > MAX_MANUAL_DOSE_MS) {
@@ -776,8 +810,15 @@ ApaDoseAlarm ApaDose::getCurrentAlarm()            const { return alarm.currentA
 bool         ApaDose::isAlarmActive()              const { return flags.alarmActive; }
 bool         ApaDose::isDosingActive()             const { return flags.dosingActive; }
 bool         ApaDose::isPrimingActive()            const { return flags.primingActive; }
-bool         ApaDose::isInStartupBlackout()        const { return startupBlackoutMs > 0 && (millis() - startupTime) < startupBlackoutMs; }
-bool         ApaDose::isConfigurationValid()       const { return flags.configurationValid; }
+bool         ApaDose::isInStartupBlackout()        const { return startupBlackoutMinutes > 0 && (millis() - startupTime) < (unsigned long)startupBlackoutMinutes * 60000UL; }
+bool         ApaDose::isExternalStopActive()            const { return externalStop != nullptr && externalStop(); }
+bool         ApaDose::isInExternalStopResumeDelay()     const { return externalStopClearedAt != 0 && (millis() - externalStopClearedAt) < EXTERNAL_STOP_RESUME_MS; }
+bool         ApaDose::isOutsideDosingWindow()           const {
+  if (!flags.dosingWindowEnabled || readRTCTime == nullptr) return false;
+  ApaDoseTime t = readRTCTime();
+  return t.hour < dosingWindowStart || t.hour >= dosingWindowEnd;
+}
+bool         ApaDose::isConfigurationValid()            const { return flags.configurationValid; }
 uint8_t      ApaDose::getDailyDoseCount()          const { return dailyDoseCount; }
 uint8_t      ApaDose::getMaxDailyDoses()           const { return maxDailyDoses; }
 unsigned long ApaDose::getLastDosingTime()         const { return lastDosingEnd; }
@@ -816,7 +857,7 @@ void ApaDose::getSystemStatus(char* buffer, size_t bufferSize) const {
 const char* ApaDose::getVersion() { return APA_DOSE_VERSION; }
 
 void ApaDose::printLibraryInfo() {
-  Serial.println(F("APA-Dose v3.3.0"));
+  Serial.println(F("APA-Dose v" APA_DOSE_VERSION));
   Serial.println(F("APA Devices"));
 }
 

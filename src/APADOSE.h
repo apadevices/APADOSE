@@ -11,7 +11,7 @@
  * - EEPROM persistent storage
  * - Hardware-agnostic callback interface
  *
- * Version: 3.3.0
+ * Version: 3.4.2
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.3.0"
+#define APA_DOSE_VERSION "3.4.2"
 #define APA_DOSE_VERSION_MAJOR 3
-#define APA_DOSE_VERSION_MINOR 3
-#define APA_DOSE_VERSION_PATCH 0
+#define APA_DOSE_VERSION_MINOR 4
+#define APA_DOSE_VERSION_PATCH 2
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -76,6 +76,11 @@ constexpr unsigned long SENSOR_STALE_MS  = 30UL * 60UL * 1000UL;
 // How long the filtration pump must be continuously off before a status warning fires.
 constexpr unsigned long FILTER_OFF_ALARM_MS = 30UL * 60UL * 1000UL;  // 30 minutes
 
+// Mandatory settling time after the external stop callback clears.
+// Prevents a dose from firing immediately when an operator toggles between filtration
+// modes quickly — water may still be diverted or stationary during the transition.
+constexpr unsigned long EXTERNAL_STOP_RESUME_MS = 5UL * 60UL * 1000UL;  // 5 minutes
+
 // EEPROM configuration
 // APAPHX2_ADS1115 occupies addresses 128-177 (pH cal + ORP cal).
 // APA-Dose starts at 192, leaving a safe gap after the sensor library.
@@ -90,7 +95,7 @@ constexpr size_t APA_DOSE_STATUS_BUFFER_SIZE = 96;
 // --- Public enumerations ---
 
 // Chemical type installed in the pump
-enum ApaDoseType {
+enum ApaDoseType : uint8_t {  // fixed underlying type — sizeof = 1 on all platforms
   DOSE_PH_PLUS,   // Base chemical    — doses when pH is below setpoint
   DOSE_PH_MINUS,  // Acid chemical    — doses when pH is above setpoint
   DOSE_CL         // Chlorine/oxidant — doses when ORP is below setpoint
@@ -172,8 +177,9 @@ struct ApaDoseTime {
 typedef void       (*AlarmCallback)(ApaDoseAlarm alarm, const char* message);
 typedef void       (*StatusCallback)(const char* message);
 typedef float      (*SensorReadCallback)();    // Return current sensor value (pH or ORP mV)
-typedef bool       (*FilterCallback)();    // Return true if filtration pump is running
-typedef ApaDoseTime (*RTCReadCallback)();  // Return current date/time from external RTC
+typedef bool       (*FilterCallback)();        // Return true if filtration pump is running
+typedef bool       (*ExternalStopCallback)();  // Return true to block all dosing (except priming)
+typedef ApaDoseTime (*RTCReadCallback)();       // Return current date/time from external RTC
 
 // --- Main class ---
 
@@ -205,12 +211,14 @@ private:
     bool alarmActive         : 1;
     bool alarmNeedsAck       : 1;
     bool sensorStaleWarned   : 1;  // set after SENSOR_STALE_MS; cleared on next good read
+    bool externalStopSent    : 1;  // rate-limits "ExtStop active" status message
   } flags;
 
   // System state
   unsigned long dosingStartTime;
   unsigned long lastDosingEnd;
-  unsigned long filterOffStart;    // millis() when filter was first seen off; 0 = filter on
+  unsigned long filterOffStart;         // millis() when filter was first seen off; 0 = filter on
+  unsigned long externalStopClearedAt;  // millis() when external stop last cleared; 0 = not in resume delay
   DosingPulse   currentPulse;
   float         sensorValue;
 
@@ -219,15 +227,16 @@ private:
   AlarmState    alarm;
 
   // Callbacks
-  AlarmCallback  onAlarmTriggered;
-  AlarmCallback  onAlarmCleared;
-  StatusCallback onStatusMessage;
-  SensorReadCallback readSensor;
-  FilterCallback filterPumpRunning;
-  RTCReadCallback readRTCTime;
+  AlarmCallback        onAlarmTriggered;
+  AlarmCallback        onAlarmCleared;
+  StatusCallback       onStatusMessage;
+  SensorReadCallback   readSensor;
+  FilterCallback       filterPumpRunning;
+  ExternalStopCallback externalStop;
+  RTCReadCallback      readRTCTime;
 
   // Startup blackout
-  unsigned long startupBlackoutMs;   // 0 = disabled
+  uint8_t       startupBlackoutMinutes;  // 0 = disabled; stored as minutes to save 3 bytes vs unsigned long
   unsigned long startupTime;
 
   // RTC — dosing window and daily counter
@@ -299,6 +308,7 @@ public:
   void setPumpFlowRate(float mlPerMin);                                            // Pump output at max PWM (mL/min); optional, default 450
   void setRTCCallback(RTCReadCallback rtcReader);                                  // Connect external RTC (call before begin)
   void setDosingWindow(uint8_t startHour, uint8_t endHour);                       // Restrict dosing to hour range 0-23 (call before begin)
+  void setExternalStopCallback(ExternalStopCallback cb);                           // Optional: block all dosing (except priming) when cb returns true
   bool begin(SensorReadCallback sensorReader,
              FilterCallback filter,
              uint8_t        blackoutMinutes = 0,
@@ -337,7 +347,10 @@ public:
   bool         isDosingActive()            const;
   bool         isPrimingActive()           const;
   bool         isInStartupBlackout()       const;
-  bool         isConfigurationValid()      const;
+  bool         isExternalStopActive()           const;  // true if external stop callback is registered and currently returning true
+  bool         isInExternalStopResumeDelay()    const;  // true during the mandatory 5-min settling wait after external stop clears
+  bool         isOutsideDosingWindow()          const;  // true if dosing window is enabled and current hour is outside it
+  bool         isConfigurationValid()           const;
   unsigned long getLastDosingTime()        const;
   uint8_t       getFailedAttempts()        const;
   uint8_t       getDailyDoseCount()        const;  // resets daily only when RTC callback is registered
