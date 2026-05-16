@@ -5,6 +5,80 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.4.2] — 2026-05-16
+
+### Fixed
+- **`enum ApaDoseType` underlying type** — the enum was untyped, causing the compiler to choose
+  a platform-dependent width: 1 byte on AVR/ESP8266, 4 bytes on ESP32/STM32. As a result,
+  `sizeof(ConfigData)` was 14 on AVR/ESP8266 but 17 on ESP32/STM32, producing wrong EEPROM
+  addresses for any pump beyond the first in multi-pump setups compiled for 32-bit targets.
+  Fixed: `enum ApaDoseType : uint8_t` forces 1-byte width on all platforms; `sizeof(ConfigData)`
+  is now 14 bytes everywhere. Existing EEPROM configs on affected 32-bit targets will fail
+  the checksum check on first boot and reset to defaults automatically — no code change needed.
+- **`begin()` always returned `true`** — `loadConfiguration()` result was never propagated;
+  every call returned `true` regardless of EEPROM validity. Fixed: return value now reflects
+  whether EEPROM data was valid (`true`) or corrupt/blank and reset to defaults (`false`).
+  Code that checked the return value (documented since 3.1.1) now works correctly.
+- **`printLibraryInfo()` hardcoded version string** — the function printed a literal `"3.1.2"`
+  instead of the `APA_DOSE_VERSION` macro, so the displayed version was always wrong after
+  any version bump. Fixed: now prints `F("APA-Dose v" APA_DOSE_VERSION)` via adjacent string
+  literal concatenation — correct at compile time for every release.
+
+### Added
+- **`isInExternalStopResumeDelay()`** — returns `true` during the mandatory 5-minute settling
+  wait that follows the external stop signal clearing. Complements `isExternalStopActive()` so
+  display code can show a distinct "resume delay" state rather than showing idle with no
+  explanation for why dosing has not restarted.
+- **`isOutsideDosingWindow()`** — returns `true` when the dosing window is enabled and the
+  current RTC hour falls outside it. Allows display code or logging to distinguish "window
+  blocked" from other idle reasons without duplicating the hour comparison logic.
+
+### Changed
+- **Version bumped to 3.4.2.**
+
+---
+
+## [3.4.1] — 2026-05-16
+
+### Added
+- **External stop resume delay** — after the `ExternalStopCallback` clears (returns `false`),
+  a mandatory 5-minute settling time (`EXTERNAL_STOP_RESUME_MS`) now applies before any new
+  dose is allowed. This prevents a brief dose from firing while a pool operator is still
+  switching between filtration modes, or while water is still flowing through a diverted outlet
+  (e.g. backwash pipe). During the delay, `triggerManualDose()` is also blocked. Priming is
+  exempt. Status messages: `"ExtStop cleared"` when the signal drops, `"Dosing resumed"` when
+  the delay expires. If the stop re-activates during the settling window, the timer resets.
+
+### Changed
+- **Memory optimisation** — `startupBlackoutMs` (`unsigned long`, 4 B) replaced by
+  `startupBlackoutMinutes` (`uint8_t`, 1 B); multiplication to milliseconds is done inline
+  at the two call sites. Saves 3 bytes of RAM per instance (6 B for a two-pump sketch on AVR).
+  No API or behaviour change.
+- **Version bumped to 3.4.1.**
+
+---
+
+## [3.4.0] — 2026-05-16
+
+### Added
+- **External stop callback** — `setExternalStopCallback(ExternalStopCallback cb)` registers an
+  optional function that blocks all dosing (automatic and manual) while it returns `true`.
+  Priming (`triggerPrime()`) is exempt. Designed for pool-side conditions where injecting
+  chemistry into non-circulating or diverted water is unsafe: maintenance/vacuuming mode,
+  backwash cycle, pool cover closed, or any signal from an external controller.
+  - While blocked during an active dose: pump stops immediately, `"Stop:ext request"` is sent
+    via `onStatusMessage`.
+  - While blocked with no active dose: `"ExtStop active"` is sent once; new doses and
+    `triggerManualDose()` calls are rejected.
+  - When the callback returns `false` again: `"ExtStop cleared"` is sent and normal dosing resumes.
+- **`isExternalStopActive()`** — live status query; returns the current result of the registered
+  external stop callback (or `false` when none is registered).
+
+### Changed
+- **Version bumped to 3.4.0.**
+
+---
+
 ## [3.3.0] — 2026-05-15
 
 ### Fixed
@@ -290,7 +364,7 @@ profiles, or fork the header constants if genuinely non-standard ranges are requ
 - **Per-instance EEPROM addressing** — `ApaDose(uint8_t pumpPin, int eepromAddress = APA_DOSE_EEPROM_ADDRESS)`;
   each pump in a multi-pump setup passes a unique address so configurations never overwrite each other.
   Single-pump sketches require no change — the default (192) is unchanged.
-  Suggested spacing: `sizeof(ConfigData)` bytes (≈20 bytes) between instances.
+  Suggested spacing: `sizeof(ConfigData)` bytes between instances.
 - **`getLastDoseSensorBefore()`** — averaged sensor value collected before the last proportional dose
 - **`getLastDoseSensorAfter()`** — averaged sensor value collected after the last rest period
 - **`getDoseEffectiveness()`** — signed percentage of band: positive = correct direction, negative = wrong direction.
