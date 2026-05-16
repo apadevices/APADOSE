@@ -72,7 +72,8 @@ void setup() {
   phPump.setDosingType(DOSE_PH_MINUS); // acid — doses when pH is above setpoint
   // pH control is one-directional — never run DOSE_PH_PLUS and DOSE_PH_MINUS on the same pool.
   phPump.setCallbacks(onAlarm, onAlarmCleared, onStatus);
-  phPump.begin(getpH, filterRunning, 20, 6);
+  if (!phPump.begin(getpH, filterRunning, 20, 6))
+    Serial.println("[WARN] phPump EEPROM invalid — defaults loaded.");
 
   // --- Chlorine pump setup ---
   // setDosingType(DOSE_CL) before begin() is critical on first boot:
@@ -82,7 +83,8 @@ void setup() {
   // Same note: for a solenoid valve use setPumpRange(255, 255).
   clPump.setDosingType(DOSE_CL);
   clPump.setCallbacks(onAlarm, onAlarmCleared, onStatus);
-  clPump.begin(getORP, filterRunning, 20, 12);
+  if (!clPump.begin(getORP, filterRunning, 20, 12))
+    Serial.println("[WARN] clPump EEPROM invalid — defaults loaded.");
 }
 
 void loop() {
