@@ -11,7 +11,7 @@
  * - EEPROM persistent storage
  * - Hardware-agnostic callback interface
  *
- * Version: 3.4.2
+ * Version: 3.8.3
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.4.2"
+#define APA_DOSE_VERSION "3.8.3"
 #define APA_DOSE_VERSION_MAJOR 3
-#define APA_DOSE_VERSION_MINOR 4
-#define APA_DOSE_VERSION_PATCH 2
+#define APA_DOSE_VERSION_MINOR 8
+#define APA_DOSE_VERSION_PATCH 3
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -43,6 +43,8 @@ constexpr float PH_BAND_MAX            = 2.0f;
 constexpr float PH_BAND_DEFAULT        = 1.0f;
 constexpr float PH_FEEDBACK_THRESHOLD  = 0.05f; // meaningful pH change after dose
 constexpr float PH_SAFETY_HARD_CAP     = 1.0f;  // absolute max pH deviation from setpoint
+constexpr float PH_SENSOR_MIN          = 0.0f;   // below this → hardware fault (open/shorted probe)
+constexpr float PH_SENSOR_MAX          = 14.0f;  // above this → hardware fault
 
 // ORP / chlorine sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float ORP_SETPOINT_MIN       = 400.0f;
@@ -53,6 +55,8 @@ constexpr float ORP_BAND_MAX           = 250.0f;
 constexpr float ORP_BAND_DEFAULT       = 100.0f;
 constexpr float ORP_FEEDBACK_THRESHOLD = 10.0f; // meaningful ORP change after dose (mV) — 5 mV was inside electrode noise floor
 constexpr float ORP_SAFETY_HARD_CAP    = 150.0f; // absolute max ORP deviation from setpoint (mV)
+constexpr float ORP_SENSOR_MIN         = -1500.0f; // below this → hardware fault (beyond electrode range)
+constexpr float ORP_SENSOR_MAX         =  1500.0f; // above this → hardware fault
 
 constexpr float SAFETY_BAND_MULTIPLIER = 1.5f;   // dynamic safety margin: band × this value
 
@@ -64,14 +68,21 @@ constexpr unsigned long MAX_MANUAL_DOSE_MS = 5UL * 60UL * 1000UL;  // 5 minutes
 // Prevents back-to-back injection of incompatible chemicals at the same inlet (acid + chlorine).
 constexpr unsigned long INTER_PUMP_LOCKOUT_MS = 90000UL;  // 90 s
 
-constexpr int           BEFORE_SAMPLES   = 2;
-constexpr int           AFTER_SAMPLES    = 3;
+constexpr uint8_t       BEFORE_SAMPLES   = 2;
+constexpr uint8_t       AFTER_SAMPLES    = 3;
 constexpr unsigned long SAMPLE_INTERVAL  = 30000UL;
 
 // If the sensor callback returns no valid value for this duration, automatic dosing is
-// suspended and a single "Sensor:stale>30min" status message is sent.
-// Dosing resumes automatically as soon as the next finite sensor reading is received.
+// suspended and ALARM_SENSOR_FAULT fires. Clears automatically on the next valid reading.
 constexpr unsigned long SENSOR_STALE_MS  = 30UL * 60UL * 1000UL;
+
+// Continuous invalid readings (out-of-range or NaN/inf) for this duration → ALARM_SENSOR_FAULT.
+// Short enough to catch a failed probe quickly; long enough to ignore momentary glitches.
+constexpr unsigned long SENSOR_FAULT_MS       =  2UL * 60UL * 1000UL;
+
+// Maximum pulse duration applied during feedback correction (2+ failed attempts).
+// 30% above the 11 s proportional maximum — enough extra reach without over-dosing.
+constexpr unsigned long FEEDBACK_PULSE_MAX_MS = 14300UL;
 
 // How long the filtration pump must be continuously off before a status warning fires.
 constexpr unsigned long FILTER_OFF_ALARM_MS = 30UL * 60UL * 1000UL;  // 30 minutes
@@ -84,7 +95,7 @@ constexpr unsigned long EXTERNAL_STOP_RESUME_MS = 5UL * 60UL * 1000UL;  // 5 min
 // EEPROM configuration
 // APAPHX2_ADS1115 occupies addresses 128-177 (pH cal + ORP cal).
 // APA-Dose starts at 192, leaving a safe gap after the sensor library.
-constexpr int      APA_DOSE_EEPROM_ADDRESS = 192;
+constexpr uint16_t APA_DOSE_EEPROM_ADDRESS = 192;
 constexpr uint16_t APA_DOSE_MAGIC_NUMBER   = 0xABCD;
 
 // Minimum safe buffer size for getSystemStatus().
@@ -96,10 +107,18 @@ constexpr size_t APA_DOSE_STATUS_BUFFER_SIZE = 96;
 
 // Chemical type installed in the pump
 enum ApaDoseType : uint8_t {  // fixed underlying type — sizeof = 1 on all platforms
-  DOSE_PH_PLUS,   // Base chemical    — doses when pH is below setpoint
-  DOSE_PH_MINUS,  // Acid chemical    — doses when pH is above setpoint
-  DOSE_CL         // Chlorine/oxidant — doses when ORP is below setpoint
+  DOSE_PH,  // pH pump — direction (raise or lower) set separately via ApaDoseDirection
+  DOSE_CL   // Chlorine/oxidant — doses when ORP is below setpoint
 };
+
+// Dosing direction for pH pumps — ignored for DOSE_CL; use CL_PLUS alias with chlorine pumps
+enum ApaDoseDirection : uint8_t {
+  PH_PLUS,  // Base chemical — doses when pH is below setpoint
+  PH_MINUS  // Acid chemical — doses when pH is above setpoint
+};
+
+// Semantic alias for DOSE_CL pumps — identical to PH_PLUS internally; direction is not used for chlorine
+constexpr ApaDoseDirection CL_PLUS = PH_PLUS;
 
 // Alarm conditions reported via callback
 enum ApaDoseAlarm {
@@ -109,7 +128,7 @@ enum ApaDoseAlarm {
   ALARM_SAFETY_BAND,      // sensor value drifted beyond safety limits
   ALARM_INVALID_PARAM,    // Configuration value rejected (out of allowed range)
   ALARM_DAILY_LIMIT,      // maximum daily dose count reached — requires human check
-  ALARM_SENSOR_FAULT      // Not fired by this library — sensor fault detection is handled by APAPHX2_ADS1115
+  ALARM_SENSOR_FAULT      // Sensor reading invalid (out of range / NaN) for >2 min, or no reading for >30 min
 };
 
 // --- Internal structures ---
@@ -126,14 +145,17 @@ struct DosingPulse {
 // only real data bytes — no undefined padding bytes included.
 // Bump APA_DOSE_CONFIG_VERSION whenever this struct layout changes.
 struct __attribute__((packed)) ConfigData {
-  uint16_t    magicNumber;      // Detects uninitialised EEPROM
-  uint8_t     version;          // Config format version
-  float       setpoint;         // User sensor target (pH or ORP mV)
-  float       proportionalBand; // Control band width
-  ApaDoseType dosingType;       // Chemical type selection
-  uint16_t    checksum;         // Data integrity validation
+  uint16_t         magicNumber;      // Detects uninitialised EEPROM
+  uint8_t          version;          // Config format version
+  float            setpoint;         // User sensor target (pH or ORP mV)
+  float            proportionalBand; // Control band width (fixed; user-configured)
+  ApaDoseType      dosingType;       // Chemical type: DOSE_PH or DOSE_CL
+  ApaDoseDirection phDirection;      // pH direction: PH_PLUS or PH_MINUS (ignored for DOSE_CL)
+  uint8_t          nudgePct;         // Adaptive PB: 0 = disabled, 1–25 = nudge rate %
+  float            adaptedPB;        // Adaptive PB: current learned value; 0.0 when disabled
+  uint16_t         checksum;         // Data integrity validation
 };
-constexpr uint8_t APA_DOSE_CONFIG_VERSION = 2;
+constexpr uint8_t APA_DOSE_CONFIG_VERSION = 4;
 
 // Feedback phase state machine — replaces three separate bool fields
 enum FeedbackPhase : uint8_t {
@@ -193,11 +215,12 @@ private:
   uint8_t pumpMaxPWM;   // Maximum allowed PWM (usually 255)
 
   // Configuration
-  float       setpoint;
-  float       proportionalBand;
-  ApaDoseType dosingType;
+  float            setpoint;
+  float            proportionalBand;
+  ApaDoseType      dosingType;
+  ApaDoseDirection phDirection;
 
-  // Boolean state — 12 flags packed into 2 bytes (vs 12 bytes as individual bools)
+  // Boolean state — 14 flags packed into 2 bytes (vs 14 bytes as individual bools)
   struct {
     bool dosingActive        : 1;
     bool blackoutMessageSent : 1;
@@ -212,6 +235,7 @@ private:
     bool alarmNeedsAck       : 1;
     bool sensorStaleWarned   : 1;  // set after SENSOR_STALE_MS; cleared on next good read
     bool externalStopSent    : 1;  // rate-limits "ExtStop active" status message
+    bool outsideDosingWindow : 1;  // cached result of last window check in update()
   } flags;
 
   // System state
@@ -248,14 +272,15 @@ private:
 
   // Sensor read timing
   unsigned long lastSensorRead;
-  unsigned long lastGoodSensorTime;   // millis() of last finite sensor reading; 0 before first read
+  unsigned long lastGoodSensorTime;  // millis() of last finite sensor reading; 0 before first read
+  unsigned long lastDailyReset;      // millis() of last 24 h counter reset (used when no RTC)
 
   // Manual dose and priming
   unsigned long primingStartTime;
   unsigned long primingDuration;
 
   // Per-instance EEPROM base address
-  int eepromBaseAddress;
+  uint16_t eepromBaseAddress;
 
   // Last completed dose diagnostics
   float lastDoseSensorBefore;  // averaged before-dose sensor value
@@ -266,16 +291,22 @@ private:
   float dailyVolumeMl;         // accumulated volume today (resets at midnight with RTC)
   float lastDoseVolumeMl;      // volume of the last completed dose
 
+  // Adaptive proportional band
+  uint8_t nudgePct;   // 0 = disabled; 1–25 = nudge rate per cycle
+  float   adaptedPB;  // current learned PB; seeded from proportionalBand on first enable
+
   // Shared across all instances — inter-pump lockout
   static unsigned long lastAnyDoseEnd;
 
   // Sensor profile helpers — read compile-time constants directly from flash; no SRAM copies
   bool isOrpProfile() const { return dosingType == DOSE_CL; }
+  bool dosesUp()      const { return dosingType == DOSE_CL || phDirection == PH_PLUS; }
 
   // Internal methods
   void         readSensors();
   void         manageProportionalDosing();
   void         manageFeedbackSampling();
+  bool         collectSample(unsigned long now, char prefix);
   bool         shouldStartDosing();
   DosingPulse  calculateProportionalPulse();
   void         startDosingPulse(DosingPulse pulse);
@@ -301,7 +332,7 @@ public:
   // eepromAddress: base EEPROM address for this instance's configuration.
   // Each pump in a multi-pump setup must use a unique address spaced by sizeof(ConfigData).
   // Single-pump sketches can omit it — the default (APA_DOSE_EEPROM_ADDRESS) is used.
-  ApaDose(uint8_t pumpPin, int eepromAddress = APA_DOSE_EEPROM_ADDRESS);
+  ApaDose(uint8_t pumpPin, uint16_t eepromAddress = APA_DOSE_EEPROM_ADDRESS);
 
   // Initialization - call from setup()
   void setPumpRange(uint8_t minPWM, uint8_t maxPWM);                              // Calibrate to your pump (call before begin)
@@ -310,12 +341,16 @@ public:
   void setDosingWindow(uint8_t startHour, uint8_t endHour);                       // Restrict dosing to hour range 0-23 (call before begin)
   void setExternalStopCallback(ExternalStopCallback cb);                           // Optional: block all dosing (except priming) when cb returns true
   bool begin(SensorReadCallback sensorReader,
-             FilterCallback filter,
-             uint8_t        blackoutMinutes = 0,
-             uint8_t        maxDailyDoses   = 0);            // 0 = no limit
+             FilterCallback   filter,
+             ApaDoseType      type,
+             ApaDoseDirection dir,
+             uint8_t          blackoutMinutes = 0,
+             uint8_t          maxDailyDoses   = 0);            // 0 = no limit
   bool begin(SensorReadCallback sensorReader,
-             uint8_t        blackoutMinutes = 0,
-             uint8_t        maxDailyDoses   = 0);            // no-filter shorthand
+             ApaDoseType      type,
+             ApaDoseDirection dir,
+             uint8_t          blackoutMinutes = 0,
+             uint8_t          maxDailyDoses   = 0);            // no-filter shorthand
   void setCallbacks(AlarmCallback alarmTriggered,
                     AlarmCallback alarmCleared  = nullptr,
                     StatusCallback statusMessage = nullptr);
@@ -331,17 +366,21 @@ public:
   bool triggerPrime(unsigned long durationMs, uint8_t pwm = 0);  // 0 = use pumpMaxPWM; bypasses all safety guards
 
   // Configuration
-  bool setProbeSetpoint(float newSetpoint);     // Valid range depends on dosing type
-  bool setProportionalBand(float newBand);      // Valid range depends on dosing type
-  bool setDosingType(ApaDoseType newType);
+  bool setProbeSetpoint(float newSetpoint);       // Valid range depends on dosing type
+  bool setProportionalBand(float newBand);        // Valid range depends on dosing type
+  bool setDosingType(ApaDoseType newType);        // Runtime type change (DOSE_PH ↔ DOSE_CL)
+  bool setPhDirection(ApaDoseDirection newDir);   // Runtime direction change; ignored for DOSE_CL
+  void enableAdaptivePB(uint8_t pct);             // 0 = disable (resets learned value); 1–25 = nudge rate %
   void acknowledgeAlarm();
   void forceConfigurationSave();
+  void factoryReset();                            // force-stop dose/prime, reset all EEPROM fields to type-defaults, clear alarm
 
   // Status queries
-  float        getProbeValue()              const;
-  float        getCurrentSetpoint()        const;
-  float        getCurrentProportionalBand() const;
-  ApaDoseType  getCurrentDosingType()      const;
+  float            getProbeValue()              const;
+  float            getCurrentSetpoint()        const;
+  float            getCurrentProportionalBand() const;
+  ApaDoseType      getCurrentDosingType()      const;
+  ApaDoseDirection getPhDirection()            const;
   ApaDoseAlarm getCurrentAlarm()           const;
   bool         isAlarmActive()             const;
   bool         isDosingActive()            const;
@@ -351,7 +390,9 @@ public:
   bool         isInExternalStopResumeDelay()    const;  // true during the mandatory 5-min settling wait after external stop clears
   bool         isOutsideDosingWindow()          const;  // true if dosing window is enabled and current hour is outside it
   bool         isConfigurationValid()           const;
-  unsigned long getLastDosingTime()        const;
+  unsigned long getLastDosingTime()        const;  // millis() when last dose ended
+  unsigned long getSecondsSinceLastDose()  const;  // seconds since last dose ended; 0 if no dose yet
+  unsigned long getSecondsUntilNextDose()  const;  // seconds remaining in rest period; 0 if eligible now
   uint8_t       getFailedAttempts()        const;
   uint8_t       getDailyDoseCount()        const;  // resets daily only when RTC callback is registered
   uint8_t       getMaxDailyDoses()        const;  // configured limit; 0 = no limit
@@ -364,6 +405,10 @@ public:
   float getLastDoseSensorBefore()  const;  // averaged sensor value before last dose
   float getLastDoseSensorAfter()   const;  // averaged sensor value after last dose
   float getDoseEffectiveness()     const;  // signed % of band: positive = correct direction
+
+  // Adaptive proportional band
+  float getAdaptedPB()             const;  // current effective PB (learned or fixed)
+  bool  isAdaptivePBEnabled()      const;  // true when nudgePct > 0
 
   // Diagnostics
   void getSystemStatus(char* buffer, size_t bufferSize) const;
