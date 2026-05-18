@@ -5,6 +5,236 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.8.3] — 2026-05-18
+
+### Changed
+- **README — `ALARM_SENSOR_FAULT` added to alarm table** — was listed in `APADOSE.h` and API.md
+  but entirely absent from the README alarm table. Row added with trigger conditions (2 min
+  of bad readings, or 30 min without any valid reading) and auto-recovery behaviour.
+- **README — Safety band row updated** — now states that the safety band check runs every 10 s
+  via the sensor read cycle; previous wording implied it only fired when a dose was about to start.
+- **README — Stale sensor row rewritten** — old wording ("a single warning message is sent")
+  was inaccurate since `ALARM_SENSOR_FAULT` was implemented. Updated to describe the two-path
+  trigger (2 min bad readings, 30 min stale) and auto-recovery with no acknowledgment required.
+- **README — Daily dose limit row** — added that the counter auto-resets every 24 h (at real
+  midnight with an RTC, every 24 h from boot without one).
+- **README — Alarm table daily limit row** — added auto-reset note to `ALARM_DAILY_LIMIT` recovery column.
+- **README — Monitoring section** — added `getSecondsUntilNextDose()` and `getSecondsSinceLastDose()`
+  to the Key Features monitoring bullet; both were public API since 3.8.2 but undocumented in the README.
+- **README — Dose counter bullet** — updated to reflect 24 h millis-based fallback reset without RTC.
+- **README — Volume tracking paragraph** — corrected "accumulates for the session" to "resets
+  every 24 h from boot" to reflect the millis-based daily reset introduced in 3.8.2.
+- **README — Key Features safety bullet** — "stale sensor" replaced with `ALARM_SENSOR_FAULT`
+  so the alarm name is consistent with the alarm table and API reference.
+- **README — Platform memory table updated** — all five platforms re-measured from a clean build of
+  `examples/basic/02_ph_and_cl` (two-pump sketch, matching the original table basis).
+  Flash and RAM numbers updated to reflect features added since 3.4.2:
+  Uno 14,194 B / 734 B; Mega 15,260 B / 734 B; ESP32 290,293 B / 22,056 B;
+  ESP8266 276,355 B / 28,804 B. Blue Pill (STM32F103C8T6) row added:
+  26,952 B flash / 2,612 B RAM — verified clean build.
+- **README — Key Features minimal footprint bullet updated** — two-pump figures refreshed to
+  ~14 KB flash / 734 B RAM on Uno; per-instance RAM overhead updated to ~290 B.
+- **Version bumped to 3.8.3.** No code, API, or EEPROM change.
+
+---
+
+## [3.8.2] — 2026-05-18
+
+### Fixed
+- **`EEPROM.put()` instead of `EEPROM.write()` in `saveConfiguration()`** — `EEPROM.write()`
+  writes one byte at a time and silently truncates multi-byte fields; replaced with
+  `EEPROM.put()` which serialises the full `ConfigData` struct correctly on all platforms.
+- **Post-prime rest period always enforces 5 minutes** — previously the 5-minute guard used
+  `if (restPeriod == 0)` which only fired on first boot; subsequent primes inherited the last
+  proportional dose's rest period. Now unconditionally set to 5 minutes after every prime.
+- **`isExternalStopActive()` returns cached state** — was calling the user callback directly
+  inside the getter; now returns `flags.externalStopSent` set by the last `update()` call.
+- **`isOutsideDosingWindow()` returns cached state** — was performing an RTC I²C read inside
+  the getter; now returns `flags.outsideDosingWindow` cached each `update()` cycle.
+- **`ALARM_SENSOR_FAULT` implemented** — was declared in the enum but never triggered.
+  Now fires after 2 minutes of continuous out-of-range or NaN/Inf sensor readings, or after
+  30 minutes without any valid reading (stale timeout). Clears automatically on recovery.
+  Range check added to both before- and after-dose sampling blocks in `manageFeedbackSampling()`
+  to prevent corrupted samples reaching `evaluateFeedback()` before the alarm fires.
+
+### Changed
+- **`dosesUp()` extracted as private helper** — the condition
+  `dosingType == DOSE_CL || phDirection == PH_PLUS` was duplicated in three places;
+  consolidated into a single inline helper used throughout.
+- **`BEFORE_SAMPLES` / `AFTER_SAMPLES` typed as `constexpr uint8_t`** — were typed as `int`,
+  inconsistent with the `uint8_t` fields they are compared against.
+- **`FEEDBACK_PULSE_MAX_MS` named constant** — replaced magic `15000UL` with
+  `FEEDBACK_PULSE_MAX_MS = 14300UL` (11 s × 1.3). Feedback correction now boosts PWM by 50%
+  and pulse duration by 30% (capped at 14 300 ms) after two or more failed attempts.
+- **`collectSample()` helper** — duplicate ~18-line BEFORE/AFTER sampling blocks in
+  `manageFeedbackSampling()` consolidated into a single private `bool collectSample(unsigned long, char)`.
+- **`calculateProportionalPulse()` zone table reformatted** — four 150+ character single-line
+  branches broken into readable multi-line blocks; no logic change.
+- **`eepromBaseAddress` typed as `uint16_t`** — was `int`, allowing negative values that would
+  corrupt arbitrary EEPROM addresses. Constructor parameter and `APA_DOSE_EEPROM_ADDRESS`
+  constant updated to match.
+- **`ALARM_SENSOR_FAULT` removed from dead-code** — enum entry now active; `getAlarmName()`
+  and `checkAlarmClearConditions()` handle it correctly.
+- **Sensor callback type warning added to API.md** — documents that the `SensorReadCallback`
+  must return values matching the pump's `dosingType`; the library cannot detect a mismatched
+  callback since pH values (0–14) fall within the valid ORP hardware range (−1500 to +1500 mV).
+
+### Skipped
+- Internal structs (`DosingPulse`, `ConfigData`, `FeedbackState`, `AlarmState`, `FeedbackPhase`)
+  remain visible in the public header intentionally — `sizeof(ConfigData)` is used by
+  multi-pump sketches to calculate per-instance EEPROM offsets automatically.
+
+---
+
+## [3.8.1] — 2026-05-17
+
+### Fixed
+- **`factoryReset()` did not reset the feedback state machine** — if the library was in a
+  sampling phase (`FB_MEASURING_BEFORE` or `FB_MEASURING_AFTER`) when `factoryReset()` was
+  called, the next `update()` would resume the half-finished sampling cycle against the new
+  default setpoint and fire a spurious proportional dose with corrupted before-sample data.
+  Fixed: `memset(&feedback, 0, sizeof(feedback))` added before `resetToDefaults()`.
+- **Dead `readSensor != nullptr` guard in stale-sensor check** — `manageProportionalDosing()`
+  already returns at an earlier `if (readSensor == nullptr)` check, so the same condition
+  on the stale-sensor branch was always `true`. Removed the redundant prefix.
+- **`enableAdaptivePB()` parameter name shadowed class member in header** — declaration used
+  `nudgePct` as the parameter name, which shadowed the private member of the same name and
+  was inconsistent with the implementation (which correctly uses `pct`). Renamed to `pct`.
+- **Snake_case variable names in `evaluateFeedback()`** — `actual_shift` / `expected_shift`
+  renamed to `actualShift` / `expectedShift` to match the camelCase convention used
+  throughout the file.
+
+### Changed
+- **Version bumped to 3.8.1.** No API or EEPROM change.
+
+---
+
+## [3.8.0] — 2026-05-17
+
+### Added
+- **`factoryReset()`** — public method that resets all five EEPROM-stored user settings to
+  their type-default values in one call. Safe to call at any time: if a dose is active it is
+  stopped immediately; if priming is active it is stopped immediately; any active alarm is
+  cleared. After reset, defaults are saved to EEPROM and `"Factory reset"` is sent via
+  `onStatusMessage`. `dosingType` is not touched — it is always re-applied by `begin()` on
+  the next boot.
+
+  | Field | Value after reset |
+  |-------|------------------|
+  | `setpoint` | pH 7.4 / ORP 700 mV |
+  | `proportionalBand` | pH 1.0 / ORP 100 mV |
+  | `phDirection` | `PH_PLUS` |
+  | `nudgePct` | 0 (adaptive PB disabled) |
+  | `adaptedPB` | 0.0f (learned value discarded) |
+
+- **Version bumped to 3.8.0.** No EEPROM struct change — config version remains 4.
+
+---
+
+## [3.7.0] — 2026-05-17
+
+### Added
+- **Adaptive proportional band** — `enableAdaptivePB(uint8_t nudgePct)` (1–25%) enables a
+  self-learning control band that converges toward the pool's actual chemical response over time.
+  After each effective feedback cycle (correct direction, above threshold), the library compares
+  the actual sensor shift to the expected shift and nudges `adaptedPB` up when the sensor
+  overshot, down when it undershot. The learned band is clamped to `[0.2×PB, 3.0×PB]` and
+  saved to EEPROM after every adjustment. Disabled by default (`nudgePct = 0`); calling
+  `enableAdaptivePB(0)` discards the learned value and reverts to the fixed band.
+- **`getAdaptedPB()`** — returns the current effective proportional band: the learned value when
+  adaptive mode is active, the fixed `proportionalBand` otherwise.
+- **`isAdaptivePBEnabled()`** — returns `true` when `nudgePct > 0`.
+- **`APA_DOSE_CONFIG_VERSION` bumped to 4** — `ConfigData` gains `nudgePct` (uint8_t) and
+  `adaptedPB` (float), growing from 15 → 20 bytes. Existing v3 EEPROM configs fail the version
+  check on first boot and reset to defaults automatically — no code change needed.
+
+### Changed
+- **`sizeof(ConfigData)` is now 20 bytes** on all platforms (was 15). Multi-pump EEPROM
+  addresses shift: second pump 206 → 212; third 220 → 232; fourth 234 → 252.
+  Update hard-coded addresses in existing multi-pump sketches, or use `sizeof(ConfigData)`:
+  ```cpp
+  // Before (3.6.0)
+  ApaDose clPump(PIN_CL, APA_DOSE_EEPROM_ADDRESS + 15);
+
+  // After (3.7.0)
+  ApaDose clPump(PIN_CL, APA_DOSE_EEPROM_ADDRESS + 20);
+  // or — preferred, always correct regardless of version:
+  ApaDose clPump(PIN_CL, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData));
+  ```
+- **Version bumped to 3.7.0.**
+
+---
+
+## [3.6.0] — 2026-05-17
+
+### Added
+- **`ApaDoseDirection` enum** — new enum `{ PH_PLUS, PH_MINUS }` separates dosing direction
+  from chemical type. pH direction is now independent of `ApaDoseType`: pass it to `begin()`
+  as the fourth parameter and change it at runtime with `setPhDirection()`.
+- **`setPhDirection(ApaDoseDirection)`** — changes acid/base direction at runtime for `DOSE_PH`
+  pumps after `begin()` has run. Returns `false` if dosing is active or if called on a `DOSE_CL`
+  pump. Saves to EEPROM immediately.
+- **`getPhDirection()`** — returns the currently active `ApaDoseDirection`.
+- **`APA_DOSE_CONFIG_VERSION` bumped to 3** — `ConfigData` gains a `phDirection` byte (now
+  15 bytes). Existing v2 EEPROM configs fail checksum on first boot and reset to defaults
+  automatically — no code change needed.
+
+### Changed
+- **`ApaDoseType` simplified** — values `DOSE_PH_PLUS`, `DOSE_PH_MINUS`, and `DOSE_CL` replaced
+  by `DOSE_PH` and `DOSE_CL`. Direction is now expressed separately via `ApaDoseDirection`.
+  **Breaking change** — all existing sketches must update `ApaDoseType` usage.
+- **`begin()` signature** — `ApaDoseDirection dir` added as the fourth parameter (after `type`,
+  before `blackoutMinutes`). Both overloads updated. **Breaking change** — all sketches must
+  add the direction argument to their `begin()` call. For `DOSE_CL` pumps pass `PH_PLUS` as a
+  placeholder — it is stored but has no effect on control logic.
+  ```cpp
+  // Before (3.5.0)
+  phPump.begin(getpH, filterRunning, DOSE_PH_MINUS, 20, 6);
+  clPump.begin(getORP, filterRunning, DOSE_CL, 20, 12);
+
+  // After (3.6.0)
+  phPump.begin(getpH, filterRunning, DOSE_PH, PH_MINUS, 20, 6);
+  clPump.begin(getORP, filterRunning, DOSE_CL, PH_PLUS, 20, 12);
+  ```
+- **`sizeof(ConfigData)` is now 15 bytes** on all platforms (was 14).
+- **All 10 examples updated** to use the new `begin()` signature and new enum names.
+- **Version bumped to 3.6.0.**
+
+---
+
+## [3.5.0] — 2026-05-17
+
+### Fixed
+- **`begin()` ESP EEPROM ordering bug** — calling `setDosingType()` before `begin()` on
+  ESP8266/ESP32 silently discarded the type because `EEPROM.begin()` had not been called yet,
+  so `saveConfiguration()` wrote nothing. On first boot this worked by accident (EEPROM invalid,
+  `resetToDefaults()` used the in-RAM type); on subsequent boots the EEPROM-stored type was
+  correct only because it had been saved during a previous boot's `begin()`. Any scenario that
+  relied on a pre-`begin()` type change was unreliable.
+- **Dosing type now an explicit `begin()` parameter** — type is set after `EEPROM.begin()` runs
+  and always takes precedence over the EEPROM-stored value (hardware type is authoritative).
+  If the type changes between boots, setpoint and band are clamped to the new type's valid range
+  and re-saved automatically.
+
+### Changed
+- **`begin()` signature** — `ApaDoseType type` is now the third parameter (after `filter`,
+  before `blackoutMinutes`). Both overloads updated. **Breaking change** — all existing sketches
+  must add the type argument to their `begin()` call.
+  ```cpp
+  // Before (3.4.x)
+  phPump.setDosingType(DOSE_PH_MINUS);
+  phPump.begin(getpH, filterRunning, 20, 6);
+
+  // After (3.5.0)
+  phPump.begin(getpH, filterRunning, DOSE_PH_MINUS, 20, 6);
+  ```
+- **`setDosingType()` role changed** — no longer called during setup; use it only for runtime
+  type changes after `begin()` has run (e.g. swapping chemical in the field).
+- **All 10 examples updated** to use the new `begin()` signature.
+- **Version bumped to 3.5.0.**
+
+---
+
 ## [3.4.2] — 2026-05-16
 
 ### Fixed
