@@ -1,6 +1,6 @@
 # APA-Dose Library — API Reference
 
-**Version**: 3.4.1  
+**Version**: 3.8.3  
 **File**: `APADOSE.h` / `APADOSE.cpp`
 
 ---
@@ -19,8 +19,8 @@ void onAlarm(ApaDoseAlarm alarm, const char* msg) { Serial.println(msg); }
 
 void setup() {
   phPump.setPumpRange(65, 255);
-  phPump.setCallbacks(onAlarm);              // register callbacks BEFORE begin()
-  phPump.begin(getpH, filterRunning, 20);   // pH + filter + 20 min startup blackout
+  phPump.setCallbacks(onAlarm);                                    // register callbacks BEFORE begin()
+  phPump.begin(getpH, filterRunning, DOSE_PH, PH_MINUS, 20);  // sensor + filter + type + dir + 20 min blackout
 }
 
 void loop() {
@@ -36,7 +36,7 @@ ApaDose flocPump(PIN_FLOC_PUMP);
 void setup() {
   flocPump.setPumpRange(65, 255);
   flocPump.setCallbacks(onAlarm);
-  flocPump.begin(nullptr, filterRunning, 0, 1);  // no sensor, max 1 dose/day
+  flocPump.begin(nullptr, filterRunning, DOSE_PH, PH_PLUS, 0, 1);  // no sensor, max 1 dose/day
 }
 
 // dose manually from your schedule logic:
@@ -58,9 +58,8 @@ float getORP() { return orpSensor.getORP(); }
 
 void setup() {
   clPump.setPumpRange(65, 255);
-  clPump.setDosingType(DOSE_CL);            // must be called before begin() on first boot
   clPump.setCallbacks(onAlarm);
-  clPump.begin(getORP, filterRunning, 20);
+  clPump.begin(getORP, filterRunning, DOSE_CL, CL_PLUS, 20);
 }
 ```
 
@@ -68,20 +67,21 @@ void setup() {
 
 ## Setup Order
 
-Call setup methods in this order — order matters on first boot:
+Call setup methods in this order:
 
 ```
 1. setPumpRange()               calibrate motor dead band
 2. setPumpFlowRate()            optional — pump output at max PWM in mL/min (default 450)
-3. setDosingType()              REQUIRED for CL pumps and pH− pumps — call before begin() on first boot
-4. setRTCCallback()             optional — RTC for scheduling
-5. setDosingWindow()            optional — restrict dosing hours
-6. setExternalStopCallback()    optional — block dosing from external systems (maintenance, backwash…)
-7. setCallbacks()               register alarm/status callbacks BEFORE begin()
-8. begin()                      connect sensor + start library
+3. setRTCCallback()             optional — RTC for scheduling
+4. setDosingWindow()            optional — restrict dosing hours
+5. setExternalStopCallback()    optional — block dosing from external systems (maintenance, backwash…)
+6. setCallbacks()               register alarm/status callbacks BEFORE begin()
+7. begin()                      connect sensor + type + start library
 ```
 
 `setCallbacks()` must come before `begin()` to receive the startup blackout message and any boot-time status output.
+
+Dosing type is now passed directly to `begin()` — no separate `setDosingType()` call is needed during setup. Use `setDosingType()` only for runtime type changes after `begin()` has run.
 
 ---
 
@@ -96,13 +96,13 @@ Single hardware pin per pump, switched through a MOSFET (`analogWrite` only).
 
 `eepromAddress` is the EEPROM base address where this instance stores its configuration.  
 Single-pump sketches can omit it — the default (192) is used.  
-Multi-pump sketches **must** pass a unique address per pump; space them by `sizeof(ConfigData)` bytes (14 bytes on all platforms):
+Multi-pump sketches **must** pass a unique address per pump; space them by `sizeof(ConfigData)` bytes (20 bytes on all platforms):
 
 ```cpp
 ApaDose phPump  (PIN_PH_PUMP);                                            // EEPROM 192 (default)
-ApaDose clPump  (PIN_CL_PUMP,   APA_DOSE_EEPROM_ADDRESS +     sizeof(ConfigData));  // EEPROM 206
-ApaDose flocPump(PIN_FLOC_PUMP, APA_DOSE_EEPROM_ADDRESS + 2 * sizeof(ConfigData));  // EEPROM 220
-ApaDose algiPump(PIN_ALGI_PUMP, APA_DOSE_EEPROM_ADDRESS + 3 * sizeof(ConfigData));  // EEPROM 234
+ApaDose clPump  (PIN_CL_PUMP,   APA_DOSE_EEPROM_ADDRESS +     sizeof(ConfigData));  // EEPROM 212
+ApaDose flocPump(PIN_FLOC_PUMP, APA_DOSE_EEPROM_ADDRESS + 2 * sizeof(ConfigData));  // EEPROM 232
+ApaDose algiPump(PIN_ALGI_PUMP, APA_DOSE_EEPROM_ADDRESS + 3 * sizeof(ConfigData));  // EEPROM 252
 ```
 
 > The constant `APA_DOSE_EEPROM_ADDRESS` (192) is defined in `APADOSE.h`. The companion
@@ -148,9 +148,11 @@ Enables `getDailyVolumeMl()` and `getLastDoseVolumeMl()`. If `setPumpFlowRate()`
 ```cpp
 bool setDosingType(ApaDoseType newType);
 ```
-Sets the chemical type and loads the matching sensor profile (pH or ORP).
+Changes the chemical type at runtime and loads the matching sensor profile (pH or ORP).
 
-Call this **before `begin()`** on first boot. If current setpoint or band fall outside the new type's valid range, they are automatically reset to that type's defaults — this prevents a cross-type mismatch from being saved to EEPROM.
+Use this for runtime type changes **after `begin()` has run** — for example, switching from `DOSE_PH` to `DOSE_CL`. To change pH pump direction (acid ↔ base) at runtime, use `setPhDirection()` instead. The type and direction for initial setup are passed as parameters to `begin()`.
+
+If the current setpoint or band fall outside the new type's valid range, they are automatically reset to that type's defaults and saved to EEPROM.
 
 Returns `false` if dosing is currently active.
 
@@ -210,7 +212,7 @@ phPump.setExternalStopCallback(dosingBlocked);
 
 The 5-minute settling time (`EXTERNAL_STOP_RESUME_MS`) is hardcoded. It prevents a brief dose from firing while an operator is still switching between filtration modes or while water is still flowing through a diverted outlet.
 
-`isExternalStopActive()` returns the live callback result and can be polled at any time.
+`isExternalStopActive()` returns the cached state evaluated by the last `update()` call.
 
 ---
 
@@ -226,26 +228,28 @@ All parameters optional. **Call before `begin()`** to receive startup messages.
 
 ### `begin()`
 ```cpp
-bool begin(SensorReadCallback sensorReader, FilterCallback filter, uint8_t blackoutMinutes = 0, uint8_t maxDailyDoses = 0);
-bool begin(SensorReadCallback sensorReader, uint8_t blackoutMinutes = 0, uint8_t maxDailyDoses = 0);
+bool begin(SensorReadCallback sensorReader, FilterCallback filter, ApaDoseType type, ApaDoseDirection dir, uint8_t blackoutMinutes = 0, uint8_t maxDailyDoses = 0);
+bool begin(SensorReadCallback sensorReader, ApaDoseType type, ApaDoseDirection dir, uint8_t blackoutMinutes = 0, uint8_t maxDailyDoses = 0);
 ```
 
 Connects the library to external hardware and activates EEPROM restore.
 
 | Parameter | Description |
 |-----------|-------------|
-| `sensorReader` | Function returning the current sensor value (pH float or ORP mV float). Pass `nullptr` for sensor-less pumps (floc, algaecide) — manual dosing only, filtration interlock still active. |
+| `sensorReader` | Function returning the current sensor value (pH float or ORP mV float). Must match the pump's `dosingType` — see Callback Signatures for details. Pass `nullptr` for sensor-less pumps (floc, algaecide) — manual dosing only, filtration interlock still active. |
 | `filter` | Function returning `true` when filtration pump is running. Omit if unavailable. |
+| `type` | Chemical type: `DOSE_PH` or `DOSE_CL`. Always takes precedence over the EEPROM-stored value. If type changed since last boot, setpoint and band are clamped to the new type's valid range and re-saved. |
+| `dir` | pH dosing direction: `PH_PLUS` (base, raises pH) or `PH_MINUS` (acid, lowers pH). For `DOSE_CL` pumps use `CL_PLUS` (an alias for `PH_PLUS`) — direction is stored but not used in chlorine control logic. Takes precedence over the EEPROM-stored direction. |
 | `blackoutMinutes` | Block dosing for N minutes after boot (0 = disabled, max 60). Values above 60 clamped. |
-| `maxDailyDoses` | Maximum automatic+manual doses per day (0 = no limit). Triggers `ALARM_DAILY_LIMIT` when reached. Not saved to EEPROM — set in code each boot. |
+| `maxDailyDoses` | Maximum automatic+manual doses per day (0 = no limit). Triggers `ALARM_DAILY_LIMIT` when reached. Not saved to EEPROM — set in code each boot. Counter resets every 24 h automatically — with RTC at real midnight, without RTC every 24 h from boot. |
 
 **Usage examples:**
 ```cpp
-phPump.begin(getpH);                          // sensor only, no limits
-phPump.begin(getpH, filterRunning);           // sensor + filter
-phPump.begin(getpH, filterRunning, 20);       // + 20 min blackout
-phPump.begin(getpH, filterRunning, 20, 6);    // + max 6 doses/day
-phPump.begin(getpH, 20, 6);                   // no filter, blackout + dose limit
+phPump.begin(getpH, DOSE_PH, PH_MINUS);                           // sensor + type + dir, no limits
+phPump.begin(getpH, filterRunning, DOSE_PH, PH_MINUS);            // + filter
+phPump.begin(getpH, filterRunning, DOSE_PH, PH_MINUS, 20);        // + 20 min blackout
+phPump.begin(getpH, filterRunning, DOSE_PH, PH_MINUS, 20, 6);     // + max 6 doses/day
+clPump.begin(getORP, filterRunning, DOSE_CL, CL_PLUS, 20, 12);    // chlorine pump
 ```
 
 ---
@@ -264,14 +268,48 @@ Call every `loop()` iteration. Never blocks. Runs the full state machine: sensor
 All changes are immediately saved to EEPROM.
 
 ```cpp
-bool setProbeSetpoint(float value);     // pH: 6.8–7.8 default 7.4 | ORP: 400–850 default 700
-bool setProportionalBand(float value);  // pH: 0.5–2.0 default 1.0 | ORP: 50–250 default 100
-bool setDosingType(ApaDoseType type);   // DOSE_PH_PLUS, DOSE_PH_MINUS, or DOSE_CL
-void forceConfigurationSave();          // write to EEPROM immediately
-void acknowledgeAlarm();                // clears alarms that require user acknowledgment
+bool setProbeSetpoint(float value);         // pH: 6.8–7.8 default 7.4 | ORP: 400–850 default 700
+bool setProportionalBand(float value);      // pH: 0.5–2.0 default 1.0 | ORP: 50–250 default 100
+bool setDosingType(ApaDoseType type);       // runtime type change (DOSE_PH / DOSE_CL); set via begin() on startup
+bool setPhDirection(ApaDoseDirection dir);  // runtime direction change (PH_PLUS / PH_MINUS); DOSE_PH only
+void enableAdaptivePB(uint8_t nudgePct);    // 0 = disable (forgets learned value); 1–25 = nudge rate % per cycle
+void forceConfigurationSave();              // write to EEPROM immediately
+void acknowledgeAlarm();                    // clears alarms that require user acknowledgment
+void factoryReset();                        // force-stop any active dose/prime, reset all EEPROM fields to type-defaults, clear alarm, save
 ```
 
 `setProbeSetpoint()` and `setProportionalBand()` return `false` if the value is out of range or dosing is currently active.
+
+### `factoryReset()`
+```cpp
+void factoryReset();
+```
+Resets all EEPROM-stored user settings to their type-default values in a single call.
+
+**Sequence:**
+1. If a dose is active — stops the pump immediately (same as a mid-dose filter dropout).
+2. If priming is active — stops the pump immediately.
+3. If an alarm is active — clears it (fires `onAlarmCleared` if registered).
+4. Resets the five EEPROM fields to defaults for the current dosing type:
+
+| Field | After reset |
+|-------|-------------|
+| `setpoint` | pH 7.4 / ORP 700 mV |
+| `proportionalBand` | pH 1.0 / ORP 100 mV |
+| `phDirection` | `PH_PLUS` |
+| `nudgePct` | 0 (adaptive PB disabled) |
+| `adaptedPB` | 0.0f (learned value discarded) |
+
+5. Saves the reset values to EEPROM.
+6. Sends `"Factory reset"` via `onStatusMessage`.
+
+`dosingType` is not touched — it is always overridden by the `begin()` parameter on the next boot.
+
+```cpp
+// Example: factory reset on long button press
+if (longPress())
+  phPump.factoryReset();
+```
 
 ---
 
@@ -308,26 +346,31 @@ After priming completes the library applies a minimum 5-minute rest before the n
 ## Status Queries
 
 ```cpp
-float         getProbeValue()                   const;  // current sensor reading (pH or ORP mV) — "probe" = pool chemical electrode
-float         getCurrentSetpoint()              const;
-float         getCurrentProportionalBand()      const;
-ApaDoseType   getCurrentDosingType()            const;
-ApaDoseAlarm  getCurrentAlarm()                 const;
+float            getProbeValue()                const;  // current sensor reading (pH or ORP mV) — "probe" = pool chemical electrode
+float            getCurrentSetpoint()           const;
+float            getCurrentProportionalBand()   const;
+ApaDoseType      getCurrentDosingType()         const;  // DOSE_PH or DOSE_CL
+ApaDoseDirection getPhDirection()               const;  // PH_PLUS or PH_MINUS; always PH_PLUS for DOSE_CL
+ApaDoseAlarm     getCurrentAlarm()              const;
 const char*   getAlarmMessage()                 const;  // alarm text; empty string if no alarm
-bool          isAlarmActive()                   const;
-bool          isDosingActive()                  const;
-bool          isPrimingActive()                 const;
-bool          isInStartupBlackout()             const;
-bool          isExternalStopActive()            const;  // true if external stop callback returns true right now
-bool          isInExternalStopResumeDelay()     const;  // true during the mandatory 5-min settling wait after external stop clears
-bool          isOutsideDosingWindow()           const;  // true if dosing window enabled and current hour is outside it (requires RTC callback)
-bool          isConfigurationValid()            const;
-unsigned long getLastDosingTime()               const;  // millis() when last dose ended
-uint8_t       getFailedAttempts()               const;  // consecutive ineffective doses
-uint8_t       getDailyDoseCount()               const;  // doses today; resets only with RTC connected
-uint8_t       getMaxDailyDoses()                const;  // ceiling set in begin(); 0 = no limit
-float         getDailyVolumeMl()                const;  // total mL dosed today; resets at midnight with RTC
-float         getLastDoseVolumeMl()             const;  // mL dosed in the last completed dose
+bool             isAlarmActive()                const;
+bool             isDosingActive()               const;
+bool             isPrimingActive()              const;
+bool             isInStartupBlackout()          const;
+bool             isExternalStopActive()         const;  // true if external stop was active at last update()
+bool             isInExternalStopResumeDelay()  const;  // true during the mandatory 5-min settling wait after external stop clears
+bool             isOutsideDosingWindow()        const;  // true if dosing window enabled and current hour is outside it (requires RTC callback)
+bool             isConfigurationValid()         const;
+unsigned long    getLastDosingTime()            const;  // millis() when last dose ended
+unsigned long    getSecondsSinceLastDose()      const;  // seconds elapsed since last dose ended; 0 if no dose yet
+unsigned long    getSecondsUntilNextDose()      const;  // seconds remaining in rest period; 0 if eligible now
+uint8_t          getFailedAttempts()            const;  // consecutive ineffective doses
+uint8_t          getDailyDoseCount()            const;  // doses today; resets only with RTC connected
+uint8_t          getMaxDailyDoses()             const;  // ceiling set in begin(); 0 = no limit
+float            getDailyVolumeMl()             const;  // total mL dosed today; resets at midnight with RTC
+float            getLastDoseVolumeMl()          const;  // mL dosed in the last completed dose
+float            getAdaptedPB()                 const;  // current effective PB: learned value when adaptive enabled, fixed proportionalBand otherwise
+bool             isAdaptivePBEnabled()          const;  // true when nudgePct > 0
 ```
 
 These three queries cover all internal blocking states that are not derivable from the user's own callbacks:
@@ -339,9 +382,16 @@ These three queries cover all internal blocking states that are not derivable fr
 | `isInExternalStopResumeDelay()` | External stop cleared but 5-min settling not yet elapsed | `setExternalStopCallback()` |
 | `isOutsideDosingWindow()` | Dosing window enabled and current hour is outside it | `setDosingWindow()` + RTC callback |
 
-`getDailyDoseCount()` increments on every dose (manual or automatic). It resets to 0 when the RTC reports a new day. Without an RTC callback it never resets — use it as a session counter, not a true daily total.
+`getDailyDoseCount()` increments on every dose (manual or automatic). Reset behaviour depends on whether an RTC callback is registered:
 
-`getDailyVolumeMl()` accumulates volume across all automatic and manual doses. It resets to 0 at midnight alongside `getDailyDoseCount()`, so it also requires an RTC callback to reset daily. `getLastDoseVolumeMl()` always reflects the last completed dose regardless of RTC. Both values are 0.0 until the first dose completes.
+| RTC registered | Reset trigger |
+|----------------|---------------|
+| Yes | When the RTC reports a new calendar day (real midnight) |
+| No | Every 24 hours from the last reset (starting from `begin()`) |
+
+Without an RTC the reset is not synchronized to clock time — it occurs 24 hours after boot, then every 24 hours thereafter. For dose-limit safety purposes this is equivalent: the counter never accumulates indefinitely.
+
+`getDailyVolumeMl()` follows the same reset schedule as `getDailyDoseCount()`. `getLastDoseVolumeMl()` always reflects the last completed dose regardless of RTC. Both values are 0.0 until the first dose completes.
 
 ```cpp
 // Example: print daily consumption summary
@@ -350,6 +400,21 @@ Serial.print(phPump.getDailyDoseCount());
 Serial.print(F(" doses, "));
 Serial.print(phPump.getDailyVolumeMl(), 1);
 Serial.println(F(" mL"));
+```
+
+`getSecondsUntilNextDose()` returns `0` when the rest period has elapsed — it does not guarantee a dose will fire immediately. Other conditions (filter off, alarm, external stop, outside dosing window) can still block dosing and are queryable via the existing state getters.
+
+```cpp
+// Example: dashboard status line
+if (phPump.isAlarmActive()) {
+  Serial.println(F("ALARM"));
+} else if (phPump.getSecondsUntilNextDose() > 0) {
+  Serial.print(F("Rest: "));
+  Serial.print(phPump.getSecondsUntilNextDose() / 60);
+  Serial.println(F(" min"));
+} else {
+  Serial.println(F("Ready"));
+}
 ```
 
 ### Inter-pump chemical lockout
@@ -416,7 +481,7 @@ float getDoseEffectiveness()     const;  // signed % of band (see below)
 | `-10%`  | Sensor moved in wrong direction (10% of band) |
 
 The sign is normalized: **positive always means correct direction** regardless of pump type.  
-For `DOSE_PH_MINUS` the raw change is sign-flipped internally so a falling pH still returns a positive number.
+For `DOSE_PH` pumps with `PH_MINUS` direction the raw change is sign-flipped internally so a falling pH still returns a positive number.
 
 ```cpp
 if (phPump.hasDoseHistory()) {
@@ -425,6 +490,45 @@ if (phPump.hasDoseHistory()) {
   Serial.print("Effect: ");  Serial.print(phPump.getDoseEffectiveness()); Serial.println("%");
 }
 ```
+
+---
+
+## Adaptive Proportional Band
+
+The adaptive PB feature lets the library learn the pool's chemical response over time and automatically adjust the control band for better accuracy. It is **disabled by default** — fixed `proportionalBand` is used.
+
+### How it works
+
+After each proportional dose + feedback cycle, the library compares the actual sensor shift to the expected shift (setpoint − reading before dose). If the chemical moved the sensor **more than expected**, the band is widened so future pulses are shorter. If it moved **less than expected**, the band is narrowed so future pulses are longer. Only "effective" doses — correct direction, above feedback threshold — trigger a nudge.
+
+The learned band (`adaptedPB`) is clamped to `[0.2 × proportionalBand, 3.0 × proportionalBand]` and saved to EEPROM after every adjustment. On `setProportionalBand()` the fixed band updates immediately; the learned band scales proportionally on the next nudge. On `enableAdaptivePB(0)` the learned value is discarded — the next `enableAdaptivePB(n)` seeds from the current fixed band.
+
+### API
+
+```cpp
+void  enableAdaptivePB(uint8_t nudgePct);  // 0=disable; 1–25 = nudge rate % per cycle
+float getAdaptedPB()        const;          // current effective PB (learned or fixed)
+bool  isAdaptivePBEnabled() const;          // true when nudgePct > 0
+```
+
+`nudgePct` is clamped to 25. A value of 5 (5% per cycle) is a reasonable starting point — it converges in ~10–20 cycles without overshooting.
+
+### Usage
+
+```cpp
+void setup() {
+  phPump.setPumpRange(65, 255);
+  phPump.setCallbacks(onAlarm);
+  phPump.begin(getpH, filterRunning, DOSE_PH, PH_MINUS, 20, 6);
+  phPump.enableAdaptivePB(5);  // learn at 5% per cycle
+}
+
+// Read back in loop() or on a timer:
+Serial.print(F("Effective band: "));
+Serial.println(phPump.getAdaptedPB());
+```
+
+Adaptive PB is per-instance — each pump learns independently. It applies to proportional dosing only; manual doses are sized by the same effective band but do not trigger a nudge.
 
 ---
 
@@ -479,10 +583,17 @@ Disabled by default — saves ~200 bytes of flash and eliminates `snprintf` over
 
 ### `ApaDoseType`
 ```cpp
-enum ApaDoseType {
-  DOSE_PH_PLUS,   // Base chemical — doses when sensor value is below setpoint
-  DOSE_PH_MINUS,  // Acid chemical — doses when sensor value is above setpoint
-  DOSE_CL         // Chlorine/ORP  — doses when ORP is below setpoint
+enum ApaDoseType : uint8_t {
+  DOSE_PH,  // pH pump — direction (acid/base) set separately via begin() or setPhDirection()
+  DOSE_CL   // Chlorine/ORP pump — doses when ORP is below setpoint
+};
+```
+
+### `ApaDoseDirection`
+```cpp
+enum ApaDoseDirection : uint8_t {
+  PH_PLUS,   // Base chemical — doses when pH is below setpoint (raises pH)
+  PH_MINUS   // Acid chemical — doses when pH is above setpoint (lowers pH)
 };
 ```
 
@@ -495,7 +606,7 @@ enum ApaDoseAlarm {
   ALARM_SAFETY_BAND,      // sensor beyond setpoint ± safety band
   ALARM_INVALID_PARAM,    // configuration value out of valid range
   ALARM_DAILY_LIMIT,      // maximum daily dose count reached — requires human check
-  ALARM_SENSOR_FAULT      // reserved
+  ALARM_SENSOR_FAULT      // sensor reading out of range or NaN for >2 min, or no reading for >30 min
 };
 ```
 
@@ -508,6 +619,12 @@ enum ApaDoseAlarm {
 | `ALARM_SAFETY_BAND` | sensor beyond `min(band × 1.5, hardCap)` from setpoint | Automatic when sensor recovers |
 | `ALARM_INVALID_PARAM` | bad configuration value | Automatic rejection, no change applied |
 | `ALARM_DAILY_LIMIT` | `maxDailyDoses` reached | `acknowledgeAlarm()` |
+
+**`ALARM_WRONG_DIRECTION` on high-bather-load days:** On a heavily used pool, chlorine demand can exceed what each dose delivers — ORP may drop after dosing even though the correct chemical is present. The 3-consecutive-cycle threshold (with ~20-minute rest periods between each) gives roughly one hour of tolerance before the alarm fires, which covers most short demand spikes. If this alarm fires on a busy day:
+
+1. Check the chemical tank is not empty and contains the correct product.
+2. Check the pump is primed and delivering (prime briefly, verify flow).
+3. If both are fine, the pool demand exceeds the current dosing capacity — consider increasing the proportional band or switching to manual dose to top up, then `acknowledgeAlarm()` to resume automatic control.
 
 Display alarm details on demand:
 ```cpp
@@ -528,6 +645,13 @@ typedef void       (*AlarmCallback)(ApaDoseAlarm, const char*);
 typedef void       (*StatusCallback)(const char*);
 typedef ApaDoseTime (*RTCReadCallback)();                 // return current date/time
 ```
+
+> **Warning — sensor callback must match pump type:**  
+> The `SensorReadCallback` must return values appropriate for the pump's `dosingType`:
+> - `DOSE_PH` pump → callback must return pH (valid control range 6.8–7.8, hardware bounds 0–14)
+> - `DOSE_CL` pump → callback must return ORP in mV (valid control range 400–850 mV, hardware bounds −1500 to +1500 mV)
+>
+> **The library cannot detect a mismatched callback.** pH values (0–14) fall entirely within the valid ORP hardware range (−1500 to +1500 mV), so a pH sensor wired to a `DOSE_CL` pump passes all range checks silently. The first visible symptom is `ALARM_SAFETY_BAND`: with a 700 mV ORP setpoint, a pH reading of 7.4 is 692 mV below target — the safety band fires almost immediately, but the alarm text gives no indication of the root cause. Always verify that each pump's `begin()` call uses the correct sensor callback for its `dosingType`.
 
 ### `ApaDoseTime` struct
 ```cpp
@@ -604,8 +728,8 @@ Address 128–144  APAPHX2_ADS1115 — pH calibration
 Address 145–160  APAPHX2_ADS1115 internal gap
 Address 161–177  APAPHX2_ADS1115 — ORP calibration
 Address 178–191  safety gap
-Address 192+     APA-Dose configuration (this library); sizeof(ConfigData) = 14 bytes
-Address 206+     second pump instance; 220+ third; 234+ fourth
+Address 192+     APA-Dose configuration (this library); sizeof(ConfigData) = 20 bytes
+Address 212+     second pump instance; 232+ third; 252+ fourth
 ```
 
 Write method: `EEPROM.write()` — works on all supported platforms; ESP8266/ESP32 `EEPROM.begin()` and `EEPROM.commit()` are called automatically.  
