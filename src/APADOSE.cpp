@@ -1,14 +1,15 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.8.3
+ * Version: 3.9.0
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
 
 #include "APADOSE.h"
 
-unsigned long ApaDose::lastAnyDoseEnd = 0;
+unsigned long ApaDose::lastAnyDoseEnd  = 0;
+bool          ApaDose::shockModeActive = false;
 
 // ---------------------------------------------------------------------------
 // Platform compatibility
@@ -70,11 +71,15 @@ ApaDose::ApaDose(uint8_t pumpPin, uint16_t eepromAddress)
     eepromBaseAddress(eepromAddress),
     lastDoseSensorBefore(0.0f), lastDoseSensorAfter(0.0f),
     pumpFlowRateMlPerMin(450.0f), dailyVolumeMl(0.0f), lastDoseVolumeMl(0.0f),
-    nudgePct(0), adaptedPB(0.0f)
+    nudgePct(0), adaptedPB(0.0f),
+    shockStartTime(0), postShockCooldownEnd(0),
+    shockEffectiveStop(0), shockRiseTarget(0),
+    shockMaxDurationHours(0), shockCooldownHours(0)
 {
   currentPulse = {0, 0, 0};
-  memset(&feedback, 0, sizeof(feedback));
-  memset(&alarm,    0, sizeof(alarm));
+  memset(&feedback,        0, sizeof(feedback));
+  memset(&alarm,           0, sizeof(alarm));
+  memset(&postShockEndRTC, 0, sizeof(postShockEndRTC));
 }
 
 // ---------------------------------------------------------------------------
@@ -207,17 +212,35 @@ void ApaDose::update() {
   if (flags.primingActive) {
     if (millis() - primingStartTime >= primingDuration) {
       analogWrite(pumpPin, 0);
-      flags.primingActive     = false;
-      lastDosingEnd           = millis();
-      currentPulse.restPeriod = 5UL * 60UL * 1000UL;
+      flags.primingActive = false;
       sendStatus(onStatusMessage, F("Prime done"));
     }
     return;
   }
 
+  // Sensor read runs before shock check — live ORP needed for target comparison and safety ceiling.
   if (readSensor != nullptr && millis() - lastSensorRead >= 10000UL) {
     readSensors();
     lastSensorRead = millis();
+  }
+
+  if (flags.shockActive) {
+    manageShock();
+    return;
+  }
+
+  // Post-shock cooldown expiry — millis path
+  if (postShockCooldownEnd > 0 && millis() >= postShockCooldownEnd) {
+    postShockCooldownEnd = 0;
+    sendStatus(onStatusMessage, F("Post-shock normal"));
+  }
+  // Post-shock cooldown expiry — RTC path
+  if (postShockEndRTC.year != 0 && readRTCTime != nullptr) {
+    ApaDoseTime now = readRTCTime();
+    if (toApproxHours(now) >= toApproxHours(postShockEndRTC) + shockCooldownHours) {
+      memset(&postShockEndRTC, 0, sizeof(postShockEndRTC));
+      sendStatus(onStatusMessage, F("Post-shock normal"));
+    }
   }
 
   manageFeedbackSampling();
@@ -249,11 +272,22 @@ void ApaDose::readSensors() {
   lastGoodSensorTime      = millis();
 
   if (!flags.alarmActive) {
-    if (abs(setpoint - sensorValue) >= getEffectiveSafetyBand()) {
-      char msg[20];
-      snprintf(msg, sizeof(msg), "OOB:%.2f SP:%.2f",
-               (double)sensorValue, (double)setpoint);
-      triggerAlarm(ALARM_SAFETY_BAND, msg);
+    if (flags.shockActive) {
+      // During shock: standard safety band suspended — absolute ORP ceiling is the backstop.
+      if (sensorValue > SHOCK_ORP_MAX) {
+        char msg[20];
+        snprintf(msg, sizeof(msg), "ORP:%.0f>max", (double)sensorValue);
+        triggerAlarm(ALARM_SAFETY_BAND, msg);
+      }
+    } else if (postShockCooldownEnd > 0 || postShockEndRTC.year != 0) {
+      // Post-shock cooldown: safety band suppressed — ORP normalizing after shock.
+    } else {
+      if (abs(setpoint - sensorValue) >= getEffectiveSafetyBand()) {
+        char msg[20];
+        snprintf(msg, sizeof(msg), "OOB:%.2f SP:%.2f",
+                 (double)sensorValue, (double)setpoint);
+        triggerAlarm(ALARM_SAFETY_BAND, msg);
+      }
     }
   }
 }
@@ -264,6 +298,20 @@ void ApaDose::readSensors() {
 
 void ApaDose::manageProportionalDosing() {
   unsigned long now = millis();
+
+  // Inter-pump shock interlock — hold this instance while another is shocking.
+  if (ApaDose::shockModeActive && !flags.shockActive) {
+    if (flags.dosingActive) stopDosingPulse();
+    if (!flags.shockHoldSent) {
+      sendStatus(onStatusMessage, F("Held:shock active"));
+      flags.shockHoldSent = true;
+    }
+    return;
+  }
+  if (!ApaDose::shockModeActive && flags.shockHoldSent) {
+    flags.shockHoldSent = false;
+    sendStatus(onStatusMessage, F("Dosing resumed"));
+  }
 
   if (filterPumpRunning != nullptr) {
     if (!filterPumpRunning()) {
@@ -667,6 +715,8 @@ void ApaDose::evaluateFeedback() {
 }
 
 void ApaDose::checkSafetyConditions() {
+  if (postShockCooldownEnd > 0 || postShockEndRTC.year != 0) return;
+
   float safetyBand  = getEffectiveSafetyBand();
   float sensorError = abs(setpoint - sensorValue);
 
@@ -827,15 +877,153 @@ void ApaDose::forceConfigurationSave() {
 }
 
 void ApaDose::factoryReset() {
+  if (flags.shockActive)   stopShock(F("Shock stopped"));  // pump off, counters cleared
   if (flags.dosingActive)  stopDosingPulse();
   if (flags.primingActive) { analogWrite(pumpPin, 0); flags.primingActive = false; }
   if (flags.alarmActive)   clearAlarm();
+  // Clear post-shock cooldown — full clean slate on factory reset.
+  postShockCooldownEnd = 0;
+  memset(&postShockEndRTC, 0, sizeof(postShockEndRTC));
   // Reset feedback state machine so a half-finished sampling cycle cannot resume
   // against new default values and fire a spurious dose on the next update().
   memset(&feedback, 0, sizeof(feedback));
   resetToDefaults();
   saveConfiguration();
   sendStatus(onStatusMessage, F("Factory reset"));
+}
+
+// ---------------------------------------------------------------------------
+// Shock / super-chlorination
+// ---------------------------------------------------------------------------
+
+bool ApaDose::triggerShock(uint16_t targetORP, float currentPH,
+                           uint8_t cooldownHours) {
+  return triggerShock(targetORP, SHOCK_MAX_DURATION_HOURS, currentPH, cooldownHours);
+}
+
+bool ApaDose::triggerShock(uint16_t targetORP, uint8_t maxDurationHours, float currentPH,
+                           uint8_t cooldownHours) {
+  if (dosingType != DOSE_CL)                              return false;  // CL instances only
+  if (filterPumpRunning == nullptr)                        return false;  // filter callback required
+  if (!filterPumpRunning())                                return false;  // filter must be running
+  if (externalStop != nullptr && externalStop())           return false;  // external stop active
+  if (flags.alarmActive)                                   return false;  // active alarm blocks shock
+  if (flags.dosingActive || flags.primingActive)           return false;  // something already running
+  if (currentPH  < SHOCK_PH_MIN  || currentPH  > SHOCK_PH_MAX)  return false;  // pH 7.0–7.6 required
+  if (targetORP  < (uint16_t)SHOCK_ORP_MIN ||
+      targetORP  > (uint16_t)SHOCK_ORP_MAX)               return false;  // ORP target 600–800 mV
+  if (sensorValue >= (float)targetORP)                     return false;  // ORP already at or above target
+
+  // Inter-shock interval guard — cooldown check (millis path)
+  if (postShockCooldownEnd > 0 && millis() < postShockCooldownEnd) return false;
+  // Inter-shock interval guard — cooldown check (RTC path)
+  if (postShockEndRTC.year != 0 && readRTCTime != nullptr) {
+    ApaDoseTime now = readRTCTime();
+    if (toApproxHours(now) < toApproxHours(postShockEndRTC) + shockCooldownHours) return false;
+  }
+
+  float gap             = (float)targetORP - sensorValue;
+  shockEffectiveStop    = (uint16_t)(sensorValue + gap * (1.0f - SHOCK_OVERSHOOT_MARGIN));
+  shockRiseTarget       = (uint16_t)(sensorValue + SHOCK_RISE_MIN_MV);
+  shockMaxDurationHours = min(maxDurationHours, SHOCK_MAX_DURATION_HOURS);
+  shockCooldownHours    = min(cooldownHours,    SHOCK_COOLDOWN_MAX_HOURS);
+  shockStartTime        = millis();
+  flags.shockActive        = true;
+  ApaDose::shockModeActive = true;
+
+  analogWrite(pumpPin, pumpMaxPWM);
+
+  feedback.failedAttempts      = 0;
+  feedback.wrongDirectionCount = 0;
+  feedback.phase               = FB_IDLE;
+
+  sendStatus(onStatusMessage, F("Shock started"));
+  return true;
+}
+
+void ApaDose::manageShock() {
+  unsigned long now = millis();
+
+  if (flags.alarmActive) {
+    stopShock(F("Shock:alarm fired"));
+    return;
+  }
+  if (filterPumpRunning != nullptr && !filterPumpRunning()) {
+    stopShock(F("Shock:filter off"));
+    return;
+  }
+  if (externalStop != nullptr && externalStop()) {
+    stopShock(F("Shock:ext stop"));
+    return;
+  }
+
+  // ORP rise check — one-shot at SHOCK_RISE_CHECK_MS (20 min)
+  if (shockRiseTarget != 0 && now - shockStartTime >= SHOCK_RISE_CHECK_MS) {
+    if ((uint16_t)sensorValue >= shockRiseTarget) {
+      shockRiseTarget = 0;  // ORP is rising — check done, never fires again
+    } else {
+      char buf[20];
+      FSTR_TO_BUF(buf, F("Shock:no ORP rise"), 19);
+      buf[19] = '\0';
+      stopShock(F("Shock:no ORP rise"));
+      triggerAlarm(ALARM_INEFFECTIVE, buf);
+      return;
+    }
+  }
+
+  if ((uint16_t)sensorValue >= shockEffectiveStop) {
+    stopShock(F("Shock done:target"));
+    return;
+  }
+  if (now - shockStartTime >= (unsigned long)shockMaxDurationHours * 3600000UL) {
+    stopShock(F("Shock done:timeout"));
+    return;
+  }
+}
+
+void ApaDose::stopShock(const __FlashStringHelper* msg) {
+  analogWrite(pumpPin, 0);
+
+  unsigned long now     = millis();
+  unsigned long elapsed = now - shockStartTime;
+  lastDoseVolumeMl = (pumpMaxPWM / 255.0f) * (pumpFlowRateMlPerMin / 60000.0f) * (float)elapsed;
+  dailyVolumeMl   += lastDoseVolumeMl;
+
+  lastDosingEnd            = now;
+  lastAnyDoseEnd           = now;
+  flags.shockActive        = false;
+  ApaDose::shockModeActive = false;
+
+  if (readRTCTime != nullptr) {
+    postShockEndRTC      = readRTCTime();  // shock-end wall clock; cooldown checked via toApproxHours
+    postShockCooldownEnd = 0;
+  } else {
+    postShockCooldownEnd = now + (unsigned long)shockCooldownHours * 3600000UL;
+    memset(&postShockEndRTC, 0, sizeof(postShockEndRTC));
+  }
+
+  feedback.failedAttempts      = 0;
+  feedback.wrongDirectionCount = 0;
+  feedback.phase               = FB_IDLE;
+
+  sendStatus(onStatusMessage, msg);
+}
+
+uint32_t ApaDose::toApproxHours(ApaDoseTime t) {
+  return (uint32_t)t.year * 8760UL + (uint32_t)t.month * 720UL +
+         (uint32_t)t.day  * 24UL   + (uint32_t)t.hour;
+}
+
+bool ApaDose::isShockActive() const {
+  return flags.shockActive;
+}
+
+unsigned long ApaDose::getShockRemainingSeconds() const {
+  if (!flags.shockActive) return 0;
+  unsigned long elapsed = millis() - shockStartTime;
+  unsigned long ceiling = (unsigned long)shockMaxDurationHours * 3600000UL;
+  if (elapsed >= ceiling) return 0;
+  return (ceiling - elapsed) / 1000UL;
 }
 
 // ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@
  * - EEPROM persistent storage
  * - Hardware-agnostic callback interface
  *
- * Version: 3.8.3
+ * Version: 3.9.0
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.8.3"
+#define APA_DOSE_VERSION "3.9.0"
 #define APA_DOSE_VERSION_MAJOR 3
-#define APA_DOSE_VERSION_MINOR 8
-#define APA_DOSE_VERSION_PATCH 3
+#define APA_DOSE_VERSION_MINOR 9
+#define APA_DOSE_VERSION_PATCH 0
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -91,6 +91,30 @@ constexpr unsigned long FILTER_OFF_ALARM_MS = 30UL * 60UL * 1000UL;  // 30 minut
 // Prevents a dose from firing immediately when an operator toggles between filtration
 // modes quickly — water may still be diverted or stationary during the transition.
 constexpr unsigned long EXTERNAL_STOP_RESUME_MS = 5UL * 60UL * 1000UL;  // 5 minutes
+
+// Shock / super-chlorination mode
+// pH must be in this range before shock is permitted — lower pH = better chlorine oxidation.
+constexpr float SHOCK_PH_MIN  = 7.0f;
+constexpr float SHOCK_PH_MAX  = 7.6f;
+// ORP target must be within this range — 800 mV is the library's hard safety ceiling.
+constexpr float SHOCK_ORP_MIN = 600.0f;
+constexpr float SHOCK_ORP_MAX = 800.0f;
+// Stop dosing this fraction before the target to compensate for Cl mixing / ORP lag.
+constexpr float SHOCK_OVERSHOOT_MARGIN = 0.10f;
+// Hard ceiling on active shock dosing duration — silently clamped.
+constexpr uint8_t SHOCK_MAX_DURATION_HOURS = 4;
+// Post-shock safety band suppression window. Default 24 h; max 48 h; pool-size scaling deferred to M5 Option K.
+constexpr uint8_t SHOCK_COOLDOWN_DEFAULT_HOURS = 24;
+constexpr uint8_t SHOCK_COOLDOWN_MAX_HOURS     = 48;
+// ORP must rise at least this much within SHOCK_RISE_CHECK_MS — confirms chemical delivery.
+// Pool-size scaling of the time window is deferred to M5 Option K.
+constexpr unsigned long SHOCK_RISE_CHECK_MS = 20UL * 60UL * 1000UL;
+constexpr float         SHOCK_RISE_MIN_MV   = 20.0f;
+
+// Named ORP presets — use these instead of raw mV values for clarity.
+constexpr uint16_t SHOCK_ORP_MILD       = 700;  // light — post-rain, minor algae risk
+constexpr uint16_t SHOCK_ORP_STANDARD   = 750;  // weekly maintenance shock
+constexpr uint16_t SHOCK_ORP_AGGRESSIVE = 800;  // heavy algae, after heavy bather load
 
 // EEPROM configuration
 // APAPHX2_ADS1115 occupies addresses 128-177 (pH cal + ORP cal).
@@ -220,7 +244,7 @@ private:
   ApaDoseType      dosingType;
   ApaDoseDirection phDirection;
 
-  // Boolean state — 14 flags packed into 2 bytes (vs 14 bytes as individual bools)
+  // Boolean state — 16 flags packed into 2 bytes (vs 16 bytes as individual bools)
   struct {
     bool dosingActive        : 1;
     bool blackoutMessageSent : 1;
@@ -236,6 +260,8 @@ private:
     bool sensorStaleWarned   : 1;  // set after SENSOR_STALE_MS; cleared on next good read
     bool externalStopSent    : 1;  // rate-limits "ExtStop active" status message
     bool outsideDosingWindow : 1;  // cached result of last window check in update()
+    bool shockActive         : 1;  // this instance is running shock mode
+    bool shockHoldSent       : 1;  // rate-limits "Held:shock active" on non-shock instances
   } flags;
 
   // System state
@@ -295,8 +321,18 @@ private:
   uint8_t nudgePct;   // 0 = disabled; 1–25 = nudge rate per cycle
   float   adaptedPB;  // current learned PB; seeded from proportionalBand on first enable
 
-  // Shared across all instances — inter-pump lockout
+  // Shock mode state — 21 bytes per instance
+  unsigned long shockStartTime;        // millis() at shock start
+  unsigned long postShockCooldownEnd;  // millis() cooldown deadline (no RTC); 0 = inactive; also guards min inter-shock interval
+  ApaDoseTime   postShockEndRTC;       // RTC shock-end timestamp (with RTC); year==0 = inactive; survives power cycles
+  uint16_t      shockEffectiveStop;    // precomputed ORP stop threshold (startORP + gap*0.90), mV
+  uint16_t      shockRiseTarget;       // precomputed ORP rise threshold (startORP + SHOCK_RISE_MIN_MV); 0 = check already fired
+  uint8_t       shockMaxDurationHours; // clamped active dosing ceiling in hours
+  uint8_t       shockCooldownHours;    // post-shock settling window in hours
+
+  // Shared across all instances — inter-pump lockout and shock interlock
   static unsigned long lastAnyDoseEnd;
+  static bool          shockModeActive;  // true while any instance is shocking — blocks all others
 
   // Sensor profile helpers — read compile-time constants directly from flash; no SRAM copies
   bool isOrpProfile() const { return dosingType == DOSE_CL; }
@@ -326,6 +362,9 @@ private:
   bool         validateConfiguration(const ConfigData& config);
   uint16_t     calculateChecksum(const ConfigData& config);
   void         resetToDefaults();
+  void         manageShock();
+  void         stopShock(const __FlashStringHelper* msg);
+  static uint32_t toApproxHours(ApaDoseTime t);
 
 public:
   // Constructor - one pin per pump, through MOSFET.
@@ -364,6 +403,18 @@ public:
   bool triggerManualDose(unsigned long durationMs,
                          unsigned long restMs = 20UL * 60UL * 1000UL);
   bool triggerPrime(unsigned long durationMs, uint8_t pwm = 0);  // 0 = use pumpMaxPWM; bypasses all safety guards
+
+  // Shock / super-chlorination — DOSE_CL instances only; filter callback required
+  // Hobbyist: pass SHOCK_ORP_STANDARD (or SHOCK_ORP_MILD / SHOCK_ORP_AGGRESSIVE) and current pH.
+  // Pro: additionally specify max active duration (hours, clamped to 4 h) and cooldown window (hours, default 24 h, max 48 h).
+  // currentPH: pass phPump.getProbeValue() — must be in SHOCK_PH_MIN–SHOCK_PH_MAX (7.0–7.6).
+  // Returns false if any entry guard fails (see API.md for full list).
+  bool triggerShock(uint16_t targetORP, float currentPH,
+                    uint8_t cooldownHours = SHOCK_COOLDOWN_DEFAULT_HOURS);
+  bool triggerShock(uint16_t targetORP, uint8_t maxDurationHours, float currentPH,
+                    uint8_t cooldownHours = SHOCK_COOLDOWN_DEFAULT_HOURS);
+  bool          isShockActive()            const;  // true while shock dosing is running
+  unsigned long getShockRemainingSeconds() const;  // seconds to time ceiling; 0 if not active
 
   // Configuration
   bool setProbeSetpoint(float newSetpoint);       // Valid range depends on dosing type
