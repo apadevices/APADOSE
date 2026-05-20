@@ -3,7 +3,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.8.3** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.9.0** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
@@ -28,7 +28,8 @@ Part of the **APA Devices** product family.
 - **Sensor-less pump support** — pass `nullptr` as the sensor callback for flocculant or algaecide pumps; filtration interlock, daily limit, and priming all remain active
 - **Solenoid valve support** — set `min == max` in `setPumpRange()` for time-proportional on/off control; no other code changes needed
 - **Manual dosing** — `triggerManualDose()` for button or RTC-triggered doses; duration clamped to 5 minutes regardless of what is passed; all safety guards apply
-- **Pipe priming** — `triggerPrime()` fills dry pipes on installation or after a container swap; bypasses all safety guards so it works even under an active alarm
+- **Pipe priming** — `triggerPrime()` fills dry pipes on installation or after a container swap; bypasses all safety guards so it works even under an active alarm; no rest period is imposed after priming — consecutive primes are allowed immediately (useful for long pipe runs requiring multiple passes)
+- **Shock / super-chlorination** — `triggerShock()` doses chlorine at full power until ORP reaches a target or a time ceiling; automatic early-stop margin, ORP rise check, inter-pump interlock, and post-shock safety band suppression all built-in; hobbyist and pro overloads available
 - **Dosing window** — restrict automatic dosing to a configurable daily hour range via `setDosingWindow()`; manual doses and priming are unaffected
 
 **Monitoring**
@@ -42,7 +43,7 @@ Part of the **APA Devices** product family.
 - **RTC scheduling** — optional: daily counter reset at midnight, dosing window by hour; library works fully without an RTC
 - **Non-blocking** — pure `millis()` state machine; zero `delay()` calls; safe to call every `loop()` iteration alongside any other code
 - **Universal hardware support** — AVR (Uno through Mega), ESP8266, ESP32, STM32 — same source, no `#ifdef` in user code
-- **Minimal footprint** — two-pump sketch: ~14 KB flash / 734 B RAM on Uno; ~290 B RAM per additional instance; 13 boolean flags packed into 2 bytes
+- **Minimal footprint** — two-pump sketch: ~15 KB flash / 791 B RAM on Uno; ~300 B RAM per additional instance; 16 boolean flags packed into 2 bytes
 - **No required dependencies** — the library itself needs only `<Arduino.h>` and `<EEPROM.h>`; RTClib (+ Adafruit BusIO) is required only when using an RTC for scheduling — not needed without one
 
 ---
@@ -194,6 +195,8 @@ Most safety features are always active with no configuration required. Two featu
 | **Filter-off notification** | If the filter stays off for 30 minutes, a single `"Filter off>30min"` status message fires. The operator is reminded that circulation has stopped. **Active only when a `FilterCallback` is provided to `begin()`.** |
 | **Setpoint range enforcement** | Both pH and ORP setpoints are rejected if outside safe operating bounds. pH: **6.8 – 7.8** (floor prevents dangerously acidic water; ceiling prevents scaling and chlorine inefficiency). ORP: **400 – 850 mV** (floor prevents under-chlorination; ceiling prevents harmful free-chlorine levels for bathers). Out-of-range values are rejected silently and reported via `ALARM_INVALID_PARAM`. |
 | **Inter-pump lockout** | After any pump instance completes a dose, all other instances wait 90 s before starting. Prevents back-to-back injection of incompatible chemicals at the same inlet (acid + chlorine → chlorine gas). |
+| **Shock interlock** | While `triggerShock()` is running on a chlorine pump, all other `ApaDose` instances are held immediately — `"Held:shock active"` fires once per held instance. When shock ends all instances resume automatically. This prevents pH acid from being dosed into a high-ORP pool mid-shock. |
+| **Post-shock safety band suppression** | After shock completes, the safety band alarm is suppressed for the cooldown window (default 24 h, max 48 h) while elevated ORP normalizes. Without suppression, the expected post-shock ORP level would trigger a false `ALARM_SAFETY_BAND` within minutes of stopping. `"Post-shock normal"` fires when the window expires. |
 
 ---
 
@@ -404,11 +407,57 @@ phPump.triggerPrime(20UL * 1000UL);
 phPump.triggerPrime(20UL * 1000UL, 160);              // 160 / 255 PWM
 ```
 
-A `"Prime done"` status message fires when the duration elapses. Priming does not count toward the daily dose limit. After priming completes the library imposes a minimum 5-minute rest before the next automatic dose starts on that pump instance.
+A `"Prime done"` status message fires when the duration elapses. Priming does not count toward the daily dose limit. No rest period is imposed after priming — priming fills dry pipe only and carries no chemical into the pool, so consecutive primes and immediate automatic dosing are both permitted.
 
 `triggerPrime()` returns `false` if a dose or another prime is already running.
 
 > See **`examples/advanced/05_multi_pump/`** for the complete four-pump example.
+
+### Shock / super-chlorination
+
+`triggerShock()` doses the chlorine pump at **full power** until ORP reaches a target value or a time ceiling expires, then automatically returns to normal proportional control. Use it after heavy bather load, algae events, storms, or any situation where the pool is so far from target that proportional dosing would take many hours.
+
+**Two overloads:**
+
+```cpp
+// Hobbyist — use named presets, sensible defaults (4 h max, 24 h cooldown)
+clPump.triggerShock(SHOCK_ORP_STANDARD, phPump.getProbeValue());
+
+// Pro — full control
+clPump.triggerShock(780, 3, phPump.getProbeValue(), 48);
+//                  ^targetORP  ^maxHours  ^currentPH  ^cooldownHours
+```
+
+**Named ORP presets** (use instead of raw mV values):
+
+| Constant | Value | When |
+|----------|-------|------|
+| `SHOCK_ORP_MILD` | 700 mV | Post-rain, minor algae risk |
+| `SHOCK_ORP_STANDARD` | 750 mV | Weekly maintenance shock |
+| `SHOCK_ORP_AGGRESSIVE` | 800 mV | Heavy algae, high bather load |
+
+**Key behaviours:**
+
+- pH must be 7.0–7.6 before shock — chlorine is far more effective in this range (above 7.6, over half the free chlorine converts to the inactive OCl⁻ form)
+- Stops 10% before the target ORP — compensates for chlorine mixing lag; ORP continues rising after dosing stops
+- At 20 minutes: checks that ORP has risen ≥ 20 mV; if not, aborts with `ALARM_INEFFECTIVE` — catches an empty tank or failed pump before wasting hours
+- All other pumps are held during shock — `"Held:shock active"` fires; they resume automatically when shock ends
+- Safety band alarm suppressed for 24 h after shock (configurable up to 48 h) — prevents false `ALARM_SAFETY_BAND` while ORP normalizes
+- With RTC: post-shock cooldown is wall-clock based and survives power cycles
+- `dailyDoseCount` is not incremented; `dailyVolumeMl` is accumulated for cost tracking
+
+```cpp
+// In loop() — check shock state for display or logging
+if (clPump.isShockActive()) {
+  Serial.print("Shock active, ");
+  Serial.print(clPump.getShockRemainingSeconds() / 60);
+  Serial.println(" min remaining");
+}
+```
+
+> See **`examples/basic/02_ph_and_cl/`** for the hobbyist shock call with a dedicated button.  
+> See **`examples/advanced/05_multi_pump/`** for the pro call with RTC-backed cooldown and serial feedback.  
+> Full entry guards, chemistry reference, and alarm table: [`docs/API.md`](docs/API.md#shock--super-chlorination).
 
 ---
 
@@ -451,6 +500,8 @@ pump.begin(sensorReader, type, dir, blackoutMinutes, maxDailyDoses);
 | 6 | `maxDailyDoses` | `uint8_t` | No | `0` | Maximum combined automatic and manual doses per day. 0 = no limit. |
 
 Parameters 5 and 6 are positional and must be supplied in order when used. Trailing defaults can be omitted — `pump.begin(getSensor, filterRunning, DOSE_PH, PH_MINUS, 20)` sets a 20-minute blackout and leaves the daily limit unrestricted.
+
+> **Sensor smoothing required.** The `SensorReadCallback` must return a pre-smoothed value. APA-Dose averages 2 readings before each dose and 3 readings after, but each individual sample is used as received. High reading-to-reading deviation — caused by electrical noise, unstable sensor electronics, or missing RC filtering on the ADC input — leads to incorrect proportional pulse calculation, wrong-direction detection false positives, and premature `ALARM_SENSOR_FAULT` or `ALARM_WRONG_DIRECTION` triggers. Apply a moving average, exponential smoothing (IIR), or median filter inside the callback before returning. The **APAPHX-Board v2** hardware delivers inherently stable, high-resolution readings through its dedicated ADC and signal conditioning circuit, making software smoothing largely unnecessary when using that board; bare ADC solutions wired directly to a microcontroller analog input typically require it.
 
 **EEPROM writes** happen on every call to `setProbeSetpoint()`, `setProportionalBand()`, or `setDosingType()`, and once at `begin()` if no valid config was found. On AVR, `EEPROM.put()` uses `EEPROM.update()` internally and skips bytes that already match, limiting wear. On ESP8266/ESP32, `EEPROM.commit()` is called per save — flash writes are more expensive; call `forceConfigurationSave()` after a batch of changes to guarantee persistence before the next power cycle rather than calling setters one at a time in a configuration flow.
 
@@ -542,11 +593,11 @@ Verified build sizes (`examples/basic/02_ph_and_cl` — two-pump sketch, release
 
 | Board | Flash | RAM |
 |-------|-------|-----|
-| Arduino Uno (ATmega328P) | 14,194 B / 32,256 B (44%) | 734 B / 2,048 B (36%) |
-| Arduino Mega 2560 | 15,260 B / 253,952 B (6%) | 734 B / 8,192 B (9%) |
-| ESP32-DevKit | 290,293 B / 1,310,720 B (22%) | 22,056 B / 327,680 B (7%) |
-| NodeMCU v2 (ESP8266) | 276,355 B / 1,044,464 B (26%) | 28,804 B / 81,920 B (35%) |
-| Blue Pill (STM32F103C8T6) | 26,952 B / 65,536 B (41%) | 2,612 B / 20,480 B (13%) |
+| Arduino Uno (ATmega328P) | 15,344 B / 32,256 B (48%) | 791 B / 2,048 B (39%) |
+| Arduino Mega 2560 | 16,410 B / 253,952 B (6%) | 791 B / 8,192 B (10%) |
+| ESP32-DevKit | 291,345 B / 1,310,720 B (22%) | 22,104 B / 327,680 B (7%) |
+| NodeMCU v2 (ESP8266) | 277,403 B / 1,044,464 B (27%) | 28,864 B / 81,920 B (35%) |
+| Blue Pill (STM32F103C8T6) | 27,864 B / 65,536 B (43%) | 2,660 B / 20,480 B (13%) |
 
 ESP flash totals include the full Arduino framework (WiFi stack, OS); the library itself adds a few KB on top of a bare sketch.
 
@@ -592,9 +643,9 @@ APA-DOSING_LIB/
 │   └── API.md               Full API reference
 ├── examples/
 │   ├── calibration/         00_pump_calibration  (run first — finds setPumpRange() value)
-│   ├── basic/               01_single_ph · 02_ph_and_cl
+│   ├── basic/               01_single_ph · 02_ph_and_cl  (includes shock button)
 │   ├── intermediate/        03_serial_diagnostics · 04_lcd_display
-│   ├── advanced/            05_multi_pump · 06_alarm_management
+│   ├── advanced/            05_multi_pump  (RTC + shock pro API) · 06_alarm_management
 │   └── expert/              07–10  combined APAPHX2 + DS2482 sketches
 ├── LICENSE
 ├── keywords.txt
