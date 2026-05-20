@@ -1,6 +1,6 @@
 # APA-Dose Library — API Reference
 
-**Version**: 3.8.3  
+**Version**: 3.9.0  
 **File**: `APADOSE.h` / `APADOSE.cpp`
 
 ---
@@ -287,10 +287,11 @@ void factoryReset();
 Resets all EEPROM-stored user settings to their type-default values in a single call.
 
 **Sequence:**
-1. If a dose is active — stops the pump immediately (same as a mid-dose filter dropout).
-2. If priming is active — stops the pump immediately.
-3. If an alarm is active — clears it (fires `onAlarmCleared` if registered).
-4. Resets the five EEPROM fields to defaults for the current dosing type:
+1. If shock is active — stops the pump and clears the post-shock cooldown (full clean slate).
+2. If a dose is active — stops the pump immediately (same as a mid-dose filter dropout).
+3. If priming is active — stops the pump immediately.
+4. If an alarm is active — clears it (fires `onAlarmCleared` if registered).
+5. Resets the five EEPROM fields to defaults for the current dosing type:
 
 | Field | After reset |
 |-------|-------------|
@@ -340,6 +341,160 @@ pump.triggerPrime(10000, 100);  // 10 s at PWM 100 — gentle fill on a dry pipe
 ```
 
 After priming completes the library applies a minimum 5-minute rest before the next proportional dose. If a previous proportional dose established a longer rest period, that period is honored instead. This prevents the controller from firing immediately after a prime that pushed chemical into the pool.
+
+---
+
+## Shock / Super-Chlorination
+
+Shock mode doses the chlorine pump at full power (`pumpMaxPWM`) until ORP reaches a target or a time ceiling expires, then automatically returns to normal proportional control. Use it after heavy bather load, algae events, storms, or any situation where proportional dosing is too slow to restore chlorine.
+
+**Available on `DOSE_CL` instances only. Requires a `FilterCallback` registered in `begin()`.**
+
+### `triggerShock()` — hobbyist overload
+
+```cpp
+bool triggerShock(uint16_t targetORP, float currentPH,
+                  uint8_t cooldownHours = SHOCK_COOLDOWN_DEFAULT_HOURS);
+```
+
+Simplest form — uses sensible defaults (4 h maximum duration, 24 h post-shock cooldown).
+
+```cpp
+// Weekly maintenance shock — target 750 mV, current pH from the pH pump
+clPump.triggerShock(SHOCK_ORP_STANDARD, phPump.getProbeValue());
+
+// Aggressive shock after heavy algae — 48 h cooldown (large pool, slow ORP recovery)
+clPump.triggerShock(SHOCK_ORP_AGGRESSIVE, phPump.getProbeValue(), 48);
+```
+
+**Named ORP presets:**
+
+| Constant | Value | When to use |
+|----------|-------|-------------|
+| `SHOCK_ORP_MILD` | 700 mV | Light event — post-rain, minor algae risk |
+| `SHOCK_ORP_STANDARD` | 750 mV | Weekly maintenance shock |
+| `SHOCK_ORP_AGGRESSIVE` | 800 mV | Heavy algae or high bather load |
+
+### `triggerShock()` — pro overload
+
+```cpp
+bool triggerShock(uint16_t targetORP, uint8_t maxDurationHours, float currentPH,
+                  uint8_t cooldownHours = SHOCK_COOLDOWN_DEFAULT_HOURS);
+```
+
+Full control over duration and cooldown window.
+
+| Parameter | Type | Constraints | Description |
+|-----------|------|-------------|-------------|
+| `targetORP` | `uint16_t` | 600–800 mV | ORP target in mV; use named presets for clarity |
+| `maxDurationHours` | `uint8_t` | 1–4; clamped to 4 h | Maximum active dosing time before auto-stop |
+| `currentPH` | `float` | 7.0–7.6 | Current pH; pass `phPump.getProbeValue()` |
+| `cooldownHours` | `uint8_t` | 1–48; clamped to 48 h | Post-shock safety band suppression window; default 24 h |
+
+```cpp
+// Pro: 3 h maximum, 48 h cooldown (RTC-backed, survives power cycle)
+clPump.triggerShock(780, 3, phPump.getProbeValue(), 48);
+```
+
+### Return value and entry guards
+
+Both overloads return `false` (do nothing) when any guard fails:
+
+| # | Condition | Reason |
+|---|-----------|--------|
+| 1 | `dosingType != DOSE_CL` | Shock is chlorine-only |
+| 2 | No `FilterCallback` registered | No filter visibility — shock not safe |
+| 3 | Filter not running | Never dose into stagnant water |
+| 4 | External stop active | Operator or system has blocked dosing |
+| 5 | Alarm active | Underlying problem must be resolved first |
+| 6 | Dose or prime already running | State machine conflict |
+| 7 | `currentPH < 7.0` or `> 7.6` | pH out of effective chlorine range |
+| 8 | `targetORP < 600` or `> 800` mV | Outside permitted shock target range |
+| 9 | `sensorValue >= targetORP` | ORP already at or above target |
+| 10 | Post-shock cooldown active | Inter-shock interval not yet elapsed |
+
+### What shock does
+
+**On start:**
+- `shockEffectiveStop` = `sensorValue + (targetORP − sensorValue) × 0.90` — pump stops 10% before the target to account for Cl mixing lag; ORP continues rising after dosing stops
+- `shockRiseTarget` = `sensorValue + 20 mV` — ORP must rise at least 20 mV within the first 20 minutes
+- All other `ApaDose` instances are held: `"Held:shock active"` fires once per instance; `"Dosing resumed"` fires when shock ends
+- `dailyDoseCount` is **not** incremented (shock is operator intervention, not automatic dosing); `dailyVolumeMl` **is** accumulated
+
+**Each `update()` cycle during shock:**
+1. Alarm fired → abort: `"Shock:alarm fired"`
+2. Filter stopped → abort: `"Shock:filter off"`
+3. External stop → abort: `"Shock:ext stop"`
+4. At 20 minutes: ORP < `shockRiseTarget` → abort with `ALARM_INEFFECTIVE`: `"Shock:no ORP rise"` (empty container / failed pump detected)
+5. `sensorValue >= shockEffectiveStop` → complete: `"Shock done:target"`
+6. Time ceiling reached → complete: `"Shock done:timeout"`
+
+**Safety backstop:** the safety band check at 850 mV (`ORP_SETPOINT_MAX`) fires independently via `readSensors()` and stops everything if ORP reaches a dangerous level during shock.
+
+### Post-shock cooldown
+
+After shock ends, the safety band alarm is suppressed while ORP normalizes:
+
+- **With RTC:** cooldown measured in wall-clock hours — **survives power cycles**
+- **Without RTC:** cooldown measured with `millis()` — resets on power cycle (acceptable for no-RTC installs)
+- Maximum: 48 h (`SHOCK_COOLDOWN_MAX_HOURS`); values above this are silently clamped
+- When cooldown expires: `"Post-shock normal"` fires and normal safety monitoring resumes
+- The post-shock cooldown also guards the minimum inter-shock interval — `triggerShock()` returns `false` while cooldown is active, preventing a second shock before the pool has stabilized
+
+**Alarm behavior during and after shock:**
+
+| Alarm | During shock | Post-shock cooldown |
+|-------|-------------|---------------------|
+| `ALARM_SAFETY_BAND` | Replaced by absolute 850 mV ceiling | Suppressed |
+| `ALARM_SENSOR_FAULT` | Active | Active |
+| `ALARM_INEFFECTIVE` | Fires on ORP-rise check failure | Active |
+| `ALARM_WRONG_DIRECTION` | N/A (no proportional dosing) | Active |
+| `ALARM_DAILY_LIMIT` | N/A | Active |
+
+### Status queries
+
+```cpp
+bool          isShockActive()            const;  // true while shock dosing is running
+unsigned long getShockRemainingSeconds() const;  // seconds to time ceiling; 0 if not active
+```
+
+### Status messages
+
+| Event | Message |
+|-------|---------|
+| Shock started | `"Shock started"` |
+| Alarm fires during shock | `"Shock:alarm fired"` |
+| Filter off during shock | `"Shock:filter off"` |
+| External stop during shock | `"Shock:ext stop"` |
+| ORP did not rise in 20 min | `"Shock:no ORP rise"` + `ALARM_INEFFECTIVE` |
+| ORP reached effective stop | `"Shock done:target"` |
+| Time ceiling hit | `"Shock done:timeout"` |
+| Other instance held during shock | `"Held:shock active"` |
+| Other instance resumed after shock | `"Dosing resumed"` |
+| Cooldown window expired | `"Post-shock normal"` |
+
+### pH guidance
+
+pH must be 7.0–7.6 before shock (`SHOCK_PH_MIN` / `SHOCK_PH_MAX`). This is not bureaucracy — above pH 7.6, an increasing fraction of free chlorine converts to the ineffective hypochlorite ion (OCl⁻); at pH 7.8 roughly 60% of your chlorine dose is wasted. Adjust pH first, then shock.
+
+| pH | Approx. fraction of active HOCl | Shock effective? |
+|----|----------------------------------|------------------|
+| 7.0 | ~75% | Excellent |
+| 7.2 | ~65% | Good |
+| 7.4 | ~55% | Acceptable |
+| 7.6 | ~45% | Marginal — `SHOCK_PH_MAX` ceiling |
+| 7.8 | ~37% | Not permitted |
+
+### SRAM cost
+
+21 bytes per `DOSE_CL` instance + 1 byte shared static (`shockModeActive`). `DOSE_PH` instances pay no runtime cost — shock member variables are present (class definition is shared) but `triggerShock()` exits at guard 1 without touching them.
+
+### pH dosing hold after shock (M6 consideration)
+
+ORP can continue rising for 30–60 minutes after shock ends as dissolved chlorine continues reacting. Professional systems impose a hold on pH dosing during this period to prevent incorrect pH corrections against a still-rising ORP baseline. This feature is not implemented in v3.9 — flagged for M6.
+
+> See **`examples/basic/02_ph_and_cl/`** for the hobbyist shock pattern (button trigger, `SHOCK_ORP_STANDARD`).  
+> See **`examples/advanced/05_multi_pump/`** for the pro pattern (RTC-based cooldown, serial feedback, `isShockActive()` display).
 
 ---
 
