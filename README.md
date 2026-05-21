@@ -106,6 +106,11 @@ Doses when pH falls below setpoint — raises pH toward target.
   Pump PWM:    pumpMaxPWM  ◄──────────────────────  min+10%   off
   Pulse time:  11 s        ◄──────────────────────  2 s        off
   Rest period: 20 min      ◄──────────────────────  5 min       —
+
+  Optional dead-band  (setDeadbandPct, default off):
+  ──── active dosing zone ─────────────────────────►│◄─10%─►│
+                                                   7.30    7.40 (SP)
+  Suppresses dosing within 10% of band from SP; exits at 5% (hysteresis).
 ```
 
 ```
@@ -126,6 +131,12 @@ threshold    25 %      50 %      75 %                   100 %
   Pump PWM:    off  min+10%  ──────────────────────►  pumpMaxPWM
   Pulse time:   —   2 s      ──────────────────────►  11 s
   Rest period:  —   5 min    ──────────────────────►  20 min
+
+  Optional dead-band  (setDeadbandPct, default off):
+  │◄─10%─►│◄──────────────────── active dosing zone ──────────────
+  7.40    7.50
+  (SP)  (SP+10%)
+  Suppresses dosing within 10% of band from SP; exits at 5% (hysteresis).
 ```
 
 *The chlorine (ORP) pump follows the pH-PLUS pattern — dosing starts when ORP falls below setpoint.*
@@ -139,28 +150,31 @@ Every automatic dose passes through six phases:
 ```
   ┌─────────────────────────────────────────────────────────┐
   │                                                         │
-  │  ① SAMPLE BEFORE     2 readings × 30 s apart            │
+  │  ① SAMPLE BEFORE     2 readings × 30 s apart           │
   │        │             averaged → before-dose value       │
-  │        ▼                                                │
+  │        ▼                                               │
   │  ② CALCULATE PULSE                                      │
   │        │   error %  =  |setpoint − reading| / band      │
   │        │   PWM      ∝  error %   (proportional)         │
   │        │   time     ∝  error %   (2 – 11 s)             │
   │        │   rest     ∝  error %   (5 – 20 min)           │
-  │        ▼                                                │
+  │        ▼                                               │
   │  ③ RUN PUMP          analogWrite(PWM) for pulse time    │
-  │        │                                                │
-  │        ▼                                                │
+  │        │                                               │
+  │        ▼                                               │
   │  ④ REST              chemical mixes into pool water     │
   │        │             (5 – 20 min, proportional to dose) │
-  │        ▼                                                │
-  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart            │
+  │        ▼                                               │
+  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart           │
   │        │             averaged → after-dose value        │
-  │        ▼                                                │
-  │  ⑥ EVALUATE FEEDBACK  did the sensor move correctly?    │
-  │        ├─ yes ──► reset fail counter, repeat cycle      │
-  │        └─ no  ──► boost next dose (+30 % / +50 % PWM)   │
-  │                   alarm after 3 consecutive failures    │
+  │        ▼                                               │
+  │  ⑥ EVALUATE FEEDBACK                                    │
+  │        │  update EMA delivery baseline                   │
+  │        ├─ direction wrong? ──► boost (+30 %/+50 % PWM)  │
+  │        │                       alarm after 3 consecutive │
+  │        ├─ EMA ratio < threshold? (default 20 %)          │
+  │        │       └──────────────► ALARM_INEFFECTIVE        │
+  │        └─ ok ──► reset fail counter, repeat cycle        │
   └────────────────────────┬────────────────────────────────┘
                            │ repeat
                            ▼
