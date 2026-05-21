@@ -71,6 +71,22 @@ void printStatus() {
   Serial.print(F("  Failed attempts : "));
   Serial.println(phPump.getFailedAttempts());
 
+  // --- Dose delivery health ---
+  // getDoseEffectiveness() returns 0–100: the last dose as a % of the EMA learned baseline.
+  // 100 = at or above normal; below setEfficiencyThreshold() (default 20) = ALARM_INEFFECTIVE.
+  // Returns 100 during warm-up (first 3 auto proportional doses) — check hasDoseHistory() first.
+  if (phPump.hasDoseHistory()) {
+    Serial.print(F("  Delivery EMA    : "));
+    Serial.print(phPump.getDoseEffectiveness());
+    Serial.println(F("%  (100=normal; <20 fires alarm)"));
+    Serial.print(F("  Before / After  : "));
+    Serial.print(phPump.getLastDoseSensorBefore(), 2);
+    Serial.print(F(" -> "));
+    Serial.println(phPump.getLastDoseSensorAfter(), 2);
+  } else {
+    Serial.println(F("  Delivery EMA    : warming up (<3 doses completed)"));
+  }
+
   Serial.print(F("  Config valid    : "));
   Serial.println(phPump.isConfigurationValid() ? F("YES") : F("NO"));
 
@@ -155,11 +171,21 @@ void setup() {
   pinMode(PIN_FILTER_RELAY, INPUT);
 
   phPump.setPumpRange(65, 255);
-  phPump.setDosingType(DOSE_PH_MINUS); // acid — doses when pH is above setpoint
-  // pH control is one-directional — never run DOSE_PH_PLUS and DOSE_PH_MINUS on the same pool.
-
   phPump.setCallbacks(onAlarm, onAlarmCleared, onStatus);
-  phPump.begin(getpH, filterRunning, 20, 6);
+  // PH_MINUS = acid (lowers pH); use PH_PLUS for a base pump (raises pH)
+  phPump.begin(getpH, filterRunning, DOSE_PH, PH_MINUS, 20, 6);
+
+  // --- Pool size scaling (call AFTER begin) ---
+  // The library is calibrated for a 20 m³ reference pool.
+  // Pools above ~30 m³ need this — without it, pulses are too short and the
+  // pump will never converge to setpoint. Set once; survives factoryReset().
+  // ApaDose::setPoolVolume(35);  // uncomment and set to YOUR pool volume in m³ (10–90)
+
+  // --- Dose efficiency threshold (call AFTER begin, optional) ---
+  // The library tracks delivery health via an EMA of normalised sensor shift per ms of pump run.
+  // When a dose achieves less than this % of the learned baseline, ALARM_INEFFECTIVE fires.
+  // Default is 20 (active out of the box after 3 warm-up doses). Pass 0 to disable the alarm.
+  // phPump.setEfficiencyThreshold(20);  // default — shown here for clarity
 
   ApaDose::printLibraryInfo();
   Serial.println(F("Commands: s | a | m <ms> | p <ms> [pwm] | sp <val> | b <val>"));
