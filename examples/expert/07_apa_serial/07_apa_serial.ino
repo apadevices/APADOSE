@@ -25,6 +25,7 @@
  *   b  <val>       set pH band          e.g. b 1.0
  *   bc <val>       set ORP band         e.g. bc 100
  *   t  <val>       override water temperature  e.g. t 24.5
+ *   apb <pct>      set pH adaptive PB nudge (0=off, 1-25%)  e.g. apb 5
  *
  * Required libraries (install via Library Manager):
  *   APAPHX2_ADS1115   https://github.com/apadevices/APAPHX2_ADS1115
@@ -93,7 +94,7 @@ RTC_DS3231 rtc;
 // --- APA-Dose instances ---
 // Each instance must have a unique EEPROM base address, spaced by sizeof(ConfigData).
 ApaDose phPump(PIN_PH_PUMP);                                                // EEPROM 192 (default)
-ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 206
+ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 212
 
 // --- APA-Dose sensor callbacks — return cached APAPHX2 values ---
 float getpH()  { return cachedpH; }
@@ -217,6 +218,12 @@ void printStatus() {
   Serial.print(F("    doses today: ")); Serial.print(phPump.getDailyDoseCount());
   if (phPump.getMaxDailyDoses() > 0) { Serial.print(F("/")); Serial.print(phPump.getMaxDailyDoses()); }
   Serial.print(F("  failed: ")); Serial.println(phPump.getFailedAttempts());
+  Serial.print(F("    adaptive PB: "));
+  if (phPump.isAdaptivePBEnabled()) {
+    Serial.print(F("ON  effective=")); Serial.println(phPump.getAdaptedPB(), 3);
+  } else {
+    Serial.println(F("OFF"));
+  }
   if (phPump.isAlarmActive()) {
     Serial.print(F("    ALARM: ")); Serial.println(phPump.getAlarmMessage());
     Serial.println(requiresAck(phPump.getCurrentAlarm())
@@ -293,6 +300,11 @@ void handleSerial() {
     float val = line.substring(3).toFloat();
     Serial.println(clPump.setProportionalBand(val) ? F("[BAND] ORP band updated.") : F("[BAND] Rejected."));
 
+  } else if (line.startsWith(F("apb "))) {
+    uint8_t pct = (uint8_t)line.substring(4).toInt();
+    phPump.enableAdaptivePB(pct);
+    Serial.print(F("[APB] pH adaptive PB set to ")); Serial.print(pct); Serial.println(F("% (0=disabled)."));
+
   } else if (line.startsWith(F("t "))) {
     float val = line.substring(2).toFloat();
     if (val >= 0.0f && val <= 50.0f) {
@@ -304,7 +316,7 @@ void handleSerial() {
     }
 
   } else {
-    Serial.println(F("Commands: s | a | mph/mcl <ms> | pph/pcl <ms> [pwm] | sp/orp/b/bc <val> | t <val>"));
+    Serial.println(F("Commands: s | a | mph/mcl <ms> | pph/pcl <ms> [pwm] | sp/orp/b/bc <val> | t <val> | apb <pct>"));
   }
 }
 
@@ -350,26 +362,40 @@ void setup() {
   // Callbacks MUST be registered before begin() to receive startup messages
   phPump.setPumpRange(65, 255);        // 65 = PWM start threshold — measure for YOUR pump
   // phPump.setPumpFlowRate(450.0);    // optional: measured mL/min at max PWM — enables getDailyVolumeMl()
-  phPump.setDosingType(DOSE_PH_MINUS); // acid — doses when pH is above setpoint
-  // pH control is one-directional — never run DOSE_PH_PLUS and DOSE_PH_MINUS on the same pool.
   phPump.setRTCCallback(getRTC);
   phPump.setDosingWindow(8, 20);
   phPump.setCallbacks(onPhAlarm, onPhAlarmCleared, onStatus);
-  phPump.begin(getpH, filterRunning, 20, 6);
+  // PH_MINUS = acid (lowers pH); use PH_PLUS for a base pump (raises pH)
+  phPump.begin(getpH, filterRunning, DOSE_PH, PH_MINUS, 20, 6);
+  phPump.enableAdaptivePB(5);  // learn at 5% per feedback cycle; getAdaptedPB() reports current effective band
 
   clPump.setPumpRange(65, 255);        // measure start threshold for this pump separately
   // clPump.setPumpFlowRate(450.0);    // optional: measured mL/min at max PWM — enables getDailyVolumeMl()
-  // setDosingType(DOSE_CL) before begin() is critical on first boot:
-  // it ensures ORP defaults (setpoint 700, band 100) are written to EEPROM
-  // rather than pH defaults. On subsequent boots EEPROM is restored correctly.
-  clPump.setDosingType(DOSE_CL);
   clPump.setRTCCallback(getRTC);
   clPump.setDosingWindow(8, 20);
   clPump.setCallbacks(onClAlarm, onClAlarmCleared, onStatus);
-  clPump.begin(getORP, filterRunning, 20, 12);
+  clPump.begin(getORP, filterRunning, DOSE_CL, CL_PLUS, 20, 12);
+
+  // --- Pool size scaling (call AFTER begin) ---
+  // The library is calibrated for a 20 m³ reference pool.
+  // Pools above ~30 m³ need this — without it, pulses are too short and the
+  // pump will never converge to setpoint. Set once; survives factoryReset().
+  // ApaDose::setPoolVolume(35);  // uncomment and set to YOUR pool volume in m³ (10–90)
+
+  // --- Dead-band (call AFTER begin, optional) ---
+  // Suppresses dosing when error is small — reduces pump cycles when pool is near setpoint.
+  // 10 % means: pH ±0.10 entry / ±0.05 exit; ORP ±10 mV / ±5 mV. Cleared by factoryReset().
+  // ApaDose::setDeadbandPct(10);  // uncomment to enable; 0–20 % of proportional band
+
+  // --- pH-first priority + cross-settle coupling (call AFTER both begin() calls) ---
+  // Option J: automatically suspends CL dosing when pH > 7.6 — chlorine is ineffective above this.
+  // Option A: holds CL for N minutes after a pH dose to let chemistry equilibrate.
+  // Both are disabled by default. Uncomment to enable (requires both phPump and clPump instances).
+  // clPump.setPhPump(&phPump);          // register the link — activates Option J automatically
+  // clPump.setCrossSettleMinutes(15);   // Option A: hold CL 15 min after pH doses (0 = off)
 
   ApaDose::printLibraryInfo();
-  Serial.println(F("Commands: s | a | mph/mcl <ms> | pph/pcl <ms> [pwm] | sp/orp/b/bc <val> | t <val>"));
+  Serial.println(F("Commands: s | a | mph/mcl <ms> | pph/pcl <ms> [pwm] | sp/orp/b/bc <val> | t <val> | apb <pct>"));
   printStatus();
 }
 
