@@ -1,6 +1,6 @@
 # APA-Dose Library — API Reference
 
-**Version**: 3.9.0  
+**Version**: 3.12.0  
 **File**: `APADOSE.h` / `APADOSE.cpp`
 
 ---
@@ -13,7 +13,7 @@
 ApaDose phPump(PIN_PH_PUMP);
 
 float getpH()         { return phSensor.getPH(); }
-bool  filterRunning() { return digitalRead(PIN_FILTER_RELAY); }
+bool  filterRunning() { return digitalRead(PIN_FILTER_RELAY) == HIGH; }
 
 void onAlarm(ApaDoseAlarm alarm, const char* msg) { Serial.println(msg); }
 
@@ -77,6 +77,15 @@ Call setup methods in this order:
 5. setExternalStopCallback()    optional — block dosing from external systems (maintenance, backwash…)
 6. setCallbacks()               register alarm/status callbacks BEFORE begin()
 7. begin()                      connect sensor + type + start library
+8. setEfficiencyThreshold()     optional — per-pump delivery alarm threshold (default 20; pass 0 to disable)
+                                call any time after begin(); takes effect on the next evaluated dose
+   ApaDose::setPoolVolume()     optional — system-wide pool size scaling (static, affects all instances)
+   ApaDose::setDeadbandPct()    optional — system-wide dosing dead-band (static, affects all instances)
+                                both must come AFTER begin() — EEPROM must be initialised first
+                                can also be called at runtime from loop() — takes effect immediately
+9. clPump.setPhPump(&phPump)    optional — pH-first priority (J) + cross-settle coupling (A)
+   clPump.setCrossSettleMinutes() optional — enables Option A; call after setPhPump()
+                                both must come AFTER both pump begin() calls; pH-only setups omit this
 ```
 
 `setCallbacks()` must come before `begin()` to receive the startup blackout message and any boot-time status output.
@@ -216,6 +225,38 @@ The 5-minute settling time (`EXTERNAL_STOP_RESUME_MS`) is hardcoded. It prevents
 
 ---
 
+### `setPhPump()` / `setCrossSettleMinutes()`
+```cpp
+void setPhPump(ApaDose* phPump);
+void setCrossSettleMinutes(uint8_t minutes);
+```
+Links a CL pump instance to a pH pump peer, enabling two optional features. **Call AFTER both `begin()` calls.**
+
+**Option J — pH-first dosing priority** (activated by `setPhPump()` alone):  
+CL automatic dosing is suspended whenever the pH pump's reading exceeds `CL_PH_MAX` (7.6). Above this pH, an increasing fraction of free chlorine converts to the ineffective hypochlorite ion — dosing wastes chemical and produces misleading ORP feedback. Normal CL dosing resumes automatically once pH drops back below 7.6.  
+Status: `"CL held: pH high"` fires once when the hold activates.
+
+**Option A — cross-settle coupling** (activated by `setCrossSettleMinutes(n)`, `n > 0`):  
+CL dosing is held for `n` minutes after each pH dose completes, giving chemistry time to equilibrate. Acid doses temporarily depress ORP during mixing; without this hold a premature CL dose can fire before the reading stabilises, creating a pH/ORP see-saw.  
+Status: `"CL held: settling"` fires during the hold window.  
+`n = 0` (default) disables Option A; Option J remains active independently.
+
+Both features are off by default. Neither requires any change to the pH pump instance.
+
+```cpp
+// After phPump.begin() and clPump.begin():
+clPump.setPhPump(&phPump);          // Option J active immediately
+clPump.setCrossSettleMinutes(15);   // Option A: 15 min hold after pH doses
+```
+
+| `setPhPump` called | `setCrossSettleMinutes` | Result |
+|--------------------|------------------------|--------|
+| No | Any | J and A both inactive — CL runs independently |
+| Yes | 0 (default) | J active — CL held when pH > 7.6 |
+| Yes | > 0 | J + A active — CL also held N min after each pH dose |
+
+---
+
 ### `setCallbacks()`
 ```cpp
 void setCallbacks(AlarmCallback alarmTriggered,
@@ -273,6 +314,8 @@ bool setProportionalBand(float value);      // pH: 0.5–2.0 default 1.0 | ORP: 
 bool setDosingType(ApaDoseType type);       // runtime type change (DOSE_PH / DOSE_CL); set via begin() on startup
 bool setPhDirection(ApaDoseDirection dir);  // runtime direction change (PH_PLUS / PH_MINUS); DOSE_PH only
 void enableAdaptivePB(uint8_t nudgePct);    // 0 = disable (forgets learned value); 1–25 = nudge rate % per cycle
+void    setEfficiencyThreshold(uint8_t pct);  // delivery alarm threshold: 0 = off; default 20 (active out of box)
+uint8_t getEfficiencyThreshold() const;
 void forceConfigurationSave();              // write to EEPROM immediately
 void acknowledgeAlarm();                    // clears alarms that require user acknowledgment
 void factoryReset();                        // force-stop any active dose/prime, reset all EEPROM fields to type-defaults, clear alarm, save
@@ -291,18 +334,22 @@ Resets all EEPROM-stored user settings to their type-default values in a single 
 2. If a dose is active — stops the pump immediately (same as a mid-dose filter dropout).
 3. If priming is active — stops the pump immediately.
 4. If an alarm is active — clears it (fires `onAlarmCleared` if registered).
-5. Resets the five EEPROM fields to defaults for the current dosing type:
+5. Resets per-instance EEPROM fields to defaults for the current dosing type:
 
-| Field | After reset |
-|-------|-------------|
-| `setpoint` | pH 7.4 / ORP 700 mV |
-| `proportionalBand` | pH 1.0 / ORP 100 mV |
-| `phDirection` | `PH_PLUS` |
-| `nudgePct` | 0 (adaptive PB disabled) |
-| `adaptedPB` | 0.0f (learned value discarded) |
+| Field | After reset | Rationale |
+|-------|-------------|-----------|
+| `setpoint` | pH 7.4 / ORP 700 mV | |
+| `proportionalBand` | pH 1.0 / ORP 100 mV | |
+| `phDirection` | `PH_PLUS` | |
+| `nudgePct` | 0 (adaptive PB disabled) | |
+| `adaptedPB` | 0.0f (learned value discarded) | |
+| `_efficiencyEma` / `_efficiencyCount` / `_lastEfficiencyPct` | 0.0 / 0 / 100 (baseline cleared, ratio reset to 100) | Learned delivery baseline is installation-specific; reset clears history so a fresh baseline builds from the next 3 doses |
+| `_efficiencyThresholdPct` | **Not touched** | Integrator value — set in `setup()` like `setPhPump()`; not EEPROM-stored |
+| **dead-band** (`s_deadbandPct`) | **0 (disabled)** | Tuning parameter — must be the reliable escape hatch when dosing misbehaves after dead-band was set |
+| **pool volume** (`s_poolVolume`) | **Not touched** | Physical installation fact — the pool does not change size on reset; clear explicitly with `ApaDose::setPoolVolume(0)` |
 
-5. Saves the reset values to EEPROM.
-6. Sends `"Factory reset"` via `onStatusMessage`.
+6. Saves the reset values to EEPROM.
+7. Sends `"Factory reset"` via `onStatusMessage`.
 
 `dosingType` is not touched — it is always overridden by the `begin()` parameter on the next boot.
 
@@ -327,7 +374,18 @@ bool triggerPrime(unsigned long durationMs, uint8_t pwm = 0);          // 0 = us
 | `triggerManualDose()` | `pumpMaxPWM` | Yes — blocked if alarm active | No | Yes |
 | `triggerPrime()` | configurable | No — bypasses all guards | No | No |
 
-`triggerManualDose()` returns `false` if dosing or priming is already active, `durationMs` is 0, the filter is not running, or the daily dose limit has been reached.  
+`triggerManualDose()` returns `false` — and does nothing — when any of the following conditions are true:
+
+| Condition | Guard |
+|-----------|-------|
+| A dose or prime is already running | `flags.dosingActive \|\| flags.primingActive` |
+| An alarm is active | `flags.alarmActive` |
+| `durationMs` is 0 | zero duration is rejected |
+| Daily dose limit reached | `maxDailyDoses > 0 && dailyDoseCount >= maxDailyDoses` |
+| Filter not running | only when a `FilterCallback` was registered in `begin()` |
+| External stop active | external stop callback returns `true` |
+| External stop resume delay | 5-minute settling time after external stop cleared |
+| Inter-pump lockout active | 90 s since the last dose on any instance has not elapsed |  
 If `durationMs` exceeds `MAX_MANUAL_DOSE_MS` (5 minutes), it is silently clamped and a `"Dose capped:5min"` status message is sent — the dose still runs at the capped duration.  
 The optional `restMs` parameter (default 20 min) sets the mixing wait before the next proportional dose. Pass `0` only for sensor-less pumps where `maxDailyDoses` already prevents double-dosing.
 
@@ -340,7 +398,7 @@ pump.triggerPrime(10000);       // 10 s at full speed (default)
 pump.triggerPrime(10000, 100);  // 10 s at PWM 100 — gentle fill on a dry pipe
 ```
 
-After priming completes the library applies a minimum 5-minute rest before the next proportional dose. If a previous proportional dose established a longer rest period, that period is honored instead. This prevents the controller from firing immediately after a prime that pushed chemical into the pool.
+**No rest period is imposed after priming.** Priming fills dry pipe only — no chemical reaches the pool water, so consecutive primes are allowed immediately and automatic proportional dosing may start as soon as priming ends. If a proportional dose had completed before the prime and its rest period is still running, that rest period continues independently — it is unrelated to priming.
 
 ---
 
@@ -408,7 +466,7 @@ Both overloads return `false` (do nothing) when any guard fails:
 | 4 | External stop active | Operator or system has blocked dosing |
 | 5 | Alarm active | Underlying problem must be resolved first |
 | 6 | Dose or prime already running | State machine conflict |
-| 7 | `currentPH < 7.0` or `> 7.6` | pH out of effective chlorine range |
+| 7 | `currentPH < CL_PH_MIN` (7.0) or `> CL_PH_MAX` (7.6) | pH out of effective chlorine range |
 | 8 | `targetORP < 600` or `> 800` mV | Outside permitted shock target range |
 | 9 | `sensorValue >= targetORP` | ORP already at or above target |
 | 10 | Post-shock cooldown active | Inter-shock interval not yet elapsed |
@@ -475,14 +533,14 @@ unsigned long getShockRemainingSeconds() const;  // seconds to time ceiling; 0 i
 
 ### pH guidance
 
-pH must be 7.0–7.6 before shock (`SHOCK_PH_MIN` / `SHOCK_PH_MAX`). This is not bureaucracy — above pH 7.6, an increasing fraction of free chlorine converts to the ineffective hypochlorite ion (OCl⁻); at pH 7.8 roughly 60% of your chlorine dose is wasted. Adjust pH first, then shock.
+pH must be 7.0–7.6 before shock (`CL_PH_MIN` / `CL_PH_MAX`). This is not bureaucracy — above pH 7.6, an increasing fraction of free chlorine converts to the ineffective hypochlorite ion (OCl⁻); at pH 7.8 roughly 60% of your chlorine dose is wasted. Adjust pH first, then shock.
 
 | pH | Approx. fraction of active HOCl | Shock effective? |
 |----|----------------------------------|------------------|
 | 7.0 | ~75% | Excellent |
 | 7.2 | ~65% | Good |
 | 7.4 | ~55% | Acceptable |
-| 7.6 | ~45% | Marginal — `SHOCK_PH_MAX` ceiling |
+| 7.6 | ~45% | Marginal — `CL_PH_MAX` ceiling |
 | 7.8 | ~37% | Not permitted |
 
 ### SRAM cost
@@ -495,6 +553,95 @@ ORP can continue rising for 30–60 minutes after shock ends as dissolved chlori
 
 > See **`examples/basic/02_ph_and_cl/`** for the hobbyist shock pattern (button trigger, `SHOCK_ORP_STANDARD`).  
 > See **`examples/advanced/05_multi_pump/`** for the pro pattern (RTC-based cooldown, serial feedback, `isShockActive()` display).
+
+---
+
+## Pool Volume and Dead-band
+
+Both are **static shared values** — one call affects all pump instances simultaneously. Call after `begin()` — from `setup()` or from anywhere in `loop()` at runtime. The new value takes effect immediately: `setPoolVolume()` applies on the next dose calculation; `setDeadbandPct()` applies on the very next `update()` tick.
+
+> **Must be called after `begin()`** — on ESP8266/ESP32, `EEPROM.begin()` is called inside `begin()`. Calling `setPoolVolume()` or `setDeadbandPct()` before any `begin()` on those platforms silently discards the write because the EEPROM RAM buffer has not been allocated yet. On AVR the order does not matter, but calling after `begin()` is correct on all platforms.
+
+### Pool volume scaling
+
+```cpp
+static bool    ApaDose::setPoolVolume(uint8_t m3);  // 10–90 m³; 0 = off; false if out of range
+static uint8_t ApaDose::getPoolVolume();
+```
+
+The library was calibrated on a **20 m³** reference pool (`REFERENCE_VOLUME_M3`). Without a pool volume set, all timing parameters use the reference values. With a pool volume set, pulse duration, rest period, feedback pulse cap, and shock ORP rise window all scale proportionally:
+
+```
+scale = poolVolume / 20
+```
+
+| Pool | Scale | Effect |
+|------|-------|--------|
+| 10 m³ | 0.50× | Shorter doses, shorter rest — reacts faster in a smaller water volume |
+| 20 m³ | 1.00× | Reference — unchanged behaviour |
+| 35 m³ | 1.75× | Longer doses, longer rest — chemical needs more time to mix and take effect |
+| 50 m³ | 2.50× | Without scaling, pools above ~30 m³ often never converge to setpoint |
+| 90 m³ | 4.50× | Maximum; large commercial pool |
+
+`setPoolVolume(0)` disables scaling (returns to reference behaviour). This is the default — the library behaves identically to v3.9 and earlier for systems that do not call `setPoolVolume()`.
+
+**Persistence:** saved to a 3-byte global EEPROM slot at `APA_GLOBAL_EEPROM_ADDR` (189–191), outside `ConfigData`. **Survives `factoryReset()`** — the pool does not change size when a pump's tuning is reset. To clear it explicitly: `ApaDose::setPoolVolume(0)`.
+
+**Multi-pump note:** call once — all instances read the same value.
+
+```cpp
+void setup() {
+  phPump.begin(...);
+  clPump.begin(...);
+  ApaDose::setPoolVolume(35);   // call AFTER begin() — EEPROM must be initialised first (ESP requirement)
+}
+```
+
+---
+
+### Dead-band
+
+```cpp
+static bool    ApaDose::setDeadbandPct(uint8_t pct);  // 0–20 % of PB; 0 = off; false if > 20
+static uint8_t ApaDose::getDeadbandPct();
+```
+
+Suppresses dosing when the sensor error is small — reduces unnecessary pump cycles when the pool is already close to setpoint and sensor noise could otherwise trigger constant small doses.
+
+The unit is **percent of proportional band** — dimensionless and type-agnostic. The same setting means the same thing for pH and ORP because PB already normalizes the sensor scale:
+
+| Setting | pH (PB = 1.0) | ORP (PB = 100 mV) |
+|---------|--------------|-------------------|
+| 5% | ±0.05 pH | ±5 mV |
+| 10% | ±0.10 pH | ±10 mV |
+| 15% | ±0.15 pH | ±15 mV |
+| 20% | ±0.20 pH | ±20 mV |
+
+**Asymmetric hysteresis** — the entry and exit thresholds are deliberately different to prevent oscillation when the sensor straddles the dead-band boundary:
+
+| Entry (`pct`) | Exit threshold | Hysteresis gap |
+|--------------|----------------|----------------|
+| 0% | — | disabled |
+| 1–5% | 0% (same as entry) | none — symmetric |
+| 6–20% | `pct − 5%` | 5 percentage points |
+
+- **Entering** the dead-band requires the error to **drop below the entry threshold**.
+- **Leaving** the dead-band (re-enabling dosing) requires the error to **grow back past the entry threshold**, not just the exit threshold. This prevents the pump from toggling on and off while the sensor wanders within the gap.
+
+**Persistence:** saved to the same global slot as pool volume. **Cleared by `factoryReset()`** — dead-band is a tuning parameter. If dosing misbehaves after setting a dead-band value, `factoryReset()` is the reliable escape hatch. To clear it without a full reset: `ApaDose::setDeadbandPct(0)`.
+
+```cpp
+void setup() {
+  phPump.begin(...);
+  clPump.begin(...);
+  ApaDose::setDeadbandPct(10);   // call AFTER begin() — 10 % of PB: pH ±0.10 entry / ±0.05 exit, ORP ±10/±5 mV
+}
+```
+
+**What is NOT affected by dead-band:**
+- Safety band alarm (`readSensors()`) — always active
+- Shock mode — runs before the proportional block, unaffected
+- `triggerManualDose()` / `triggerPrime()` — user-initiated, unaffected
 
 ---
 
@@ -516,7 +663,8 @@ bool             isExternalStopActive()         const;  // true if external stop
 bool             isInExternalStopResumeDelay()  const;  // true during the mandatory 5-min settling wait after external stop clears
 bool             isOutsideDosingWindow()        const;  // true if dosing window enabled and current hour is outside it (requires RTC callback)
 bool             isConfigurationValid()         const;
-unsigned long    getLastDosingTime()            const;  // millis() when last dose ended
+unsigned long    getLastDosingTime()            const;  // millis() when last dose ended (same as getLastDosingEnd)
+unsigned long    getLastDosingEnd()             const;  // millis() when last dose ended; 0 if never dosed — used by linked CL pump for Option A
 unsigned long    getSecondsSinceLastDose()      const;  // seconds elapsed since last dose ended; 0 if no dose yet
 unsigned long    getSecondsUntilNextDose()      const;  // seconds remaining in rest period; 0 if eligible now
 uint8_t          getFailedAttempts()            const;  // consecutive ineffective doses
@@ -596,7 +744,7 @@ This protects against transient sensor glitches and disconnected probes that ret
 
 ### Stale sensor timeout
 
-If the sensor callback returns only non-finite values for `SENSOR_STALE_MS` (30 minutes) without recovery, automatic dosing is suspended and a single `"Sensor:stale>30min"` message is sent via `onStatusMessage`. Dosing resumes automatically as soon as the next finite reading arrives — no `acknowledgeAlarm()` required, no alarm is raised.
+If the sensor callback returns only non-finite values for `SENSOR_STALE_MS` (30 minutes) without recovery, automatic dosing is suspended and `ALARM_SENSOR_FAULT` fires with message `"Stale>30min"` via `onAlarmTriggered`. The alarm clears automatically as soon as the next finite reading arrives — no `acknowledgeAlarm()` required.
 
 This guards against a cable fault or ADC power loss that freezes `sensorValue` at a stale reading while allowing the pump to dose indefinitely against it. The 30-minute window is intentionally longer than `FILTER_OFF_ALARM_MS` so a simultaneous filter failure is noticed first.
 
@@ -620,29 +768,26 @@ Available after the first complete proportional dose + feedback cycle.
 Manual doses and priming do not populate these values.
 
 ```cpp
-bool  hasDoseHistory()           const;  // false until first full dose+feedback cycle
-float getLastDoseSensorBefore()  const;  // averaged sensor value before last dose
-float getLastDoseSensorAfter()   const;  // averaged sensor value after last dose
-float getDoseEffectiveness()     const;  // signed % of band (see below)
+bool    hasDoseHistory()           const;  // false until first full dose+feedback cycle
+float   getLastDoseSensorBefore()  const;  // averaged sensor value before last dose
+float   getLastDoseSensorAfter()   const;  // averaged sensor value after last dose
+uint8_t getDoseEffectiveness()     const;  // 0–100: last dose vs EMA baseline; 100 before baseline established
 ```
 
-`getDoseEffectiveness()` returns a signed percentage of `proportionalBand`:
+`getDoseEffectiveness()` returns the last dose's delivery ratio as a percentage of the learned EMA baseline. 100 means the dose delivered at or above the system's normal level; values below the configured threshold trigger `ALARM_INEFFECTIVE`. Returns 100 until the baseline is established (first 3 automatic proportional doses).
 
 | Value | Meaning |
 |-------|---------|
-| `+100%` | Sensor moved by exactly one full band — excellent dose |
-| `+20%`  | Sensor moved 20% of band — mild but correct direction |
-| `0%`    | No measurable change |
-| `-10%`  | Sensor moved in wrong direction (10% of band) |
-
-The sign is normalized: **positive always means correct direction** regardless of pump type.  
-For `DOSE_PH` pumps with `PH_MINUS` direction the raw change is sign-flipped internally so a falling pH still returns a positive number.
+| `100` | Delivery at or above learned baseline — normal |
+| `50`  | Delivered 50% of what is normal for this system |
+| `15`  | Below default 20% threshold — `ALARM_INEFFECTIVE` fires |
+| `0`   | No delivery detected |
 
 ```cpp
 if (phPump.hasDoseHistory()) {
-  Serial.print("Before: ");  Serial.println(phPump.getLastDoseSensorBefore());
-  Serial.print("After:  ");  Serial.println(phPump.getLastDoseSensorAfter());
-  Serial.print("Effect: ");  Serial.print(phPump.getDoseEffectiveness()); Serial.println("%");
+  Serial.print("Before:   ");  Serial.println(phPump.getLastDoseSensorBefore());
+  Serial.print("After:    ");  Serial.println(phPump.getLastDoseSensorAfter());
+  Serial.print("Delivery: ");  Serial.print(phPump.getDoseEffectiveness()); Serial.println("%");
 }
 ```
 
@@ -750,6 +895,19 @@ enum ApaDoseDirection : uint8_t {
   PH_PLUS,   // Base chemical — doses when pH is below setpoint (raises pH)
   PH_MINUS   // Acid chemical — doses when pH is above setpoint (lowers pH)
 };
+
+// Semantic alias for DOSE_CL pumps — identical to PH_PLUS internally
+constexpr ApaDoseDirection CL_PLUS = PH_PLUS;
+```
+
+`CL_PLUS` is a named alias for `PH_PLUS`. Use it when calling `begin()` on a chlorine pump so intent is clear in the code — `CL_PLUS` and `PH_PLUS` are the same value. Direction is not used in chlorine control logic; the alias exists purely for readability.
+
+```cpp
+// pH pump — direction matters
+phPump.begin(getpH, filterRunning, DOSE_PH, PH_MINUS, 20);  // acid pump
+
+// Chlorine pump — use CL_PLUS alias; PH_PLUS would also compile and work
+clPump.begin(getORP, filterRunning, DOSE_CL, CL_PLUS, 20);
 ```
 
 ### `ApaDoseAlarm`
@@ -770,7 +928,7 @@ enum ApaDoseAlarm {
 | Alarm | Trigger | Recovery |
 |-------|---------|----------|
 | `ALARM_WRONG_DIRECTION` | sensor moves opposite way on 3 consecutive cycles | Fix chemical or wiring → `acknowledgeAlarm()` |
-| `ALARM_INEFFECTIVE` | 3 failed dosing attempts in a row | `acknowledgeAlarm()` |
+| `ALARM_INEFFECTIVE` | EMA delivery ratio drops below threshold (default 20%), 3 consecutive failed feedback cycles, or ORP did not rise during shock | Fix pump or supply → `acknowledgeAlarm()` |
 | `ALARM_SAFETY_BAND` | sensor beyond `min(band × 1.5, hardCap)` from setpoint | Automatic when sensor recovers |
 | `ALARM_INVALID_PARAM` | bad configuration value | Automatic rejection, no change applied |
 | `ALARM_DAILY_LIMIT` | `maxDailyDoses` reached | `acknowledgeAlarm()` |
@@ -887,7 +1045,7 @@ Address 192+     APA-Dose configuration (this library); sizeof(ConfigData) = 20 
 Address 212+     second pump instance; 232+ third; 252+ fourth
 ```
 
-Write method: `EEPROM.write()` — works on all supported platforms; ESP8266/ESP32 `EEPROM.begin()` and `EEPROM.commit()` are called automatically.  
+Write method: `EEPROM.put()` — works on all supported platforms; ESP8266/ESP32 `EEPROM.begin()` and `EEPROM.commit()` are called automatically.  
 Validation: 2-byte magic number `0xABCD` + version byte + additive checksum.  
 On invalid EEPROM: factory defaults loaded and written automatically.
 
