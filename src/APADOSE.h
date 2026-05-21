@@ -11,7 +11,7 @@
  * - EEPROM persistent storage
  * - Hardware-agnostic callback interface
  *
- * Version: 3.9.0
+ * Version: 3.12.0
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -29,9 +29,9 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.9.0"
+#define APA_DOSE_VERSION "3.12.0"
 #define APA_DOSE_VERSION_MAJOR 3
-#define APA_DOSE_VERSION_MINOR 9
+#define APA_DOSE_VERSION_MINOR 12
 #define APA_DOSE_VERSION_PATCH 0
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
@@ -92,10 +92,17 @@ constexpr unsigned long FILTER_OFF_ALARM_MS = 30UL * 60UL * 1000UL;  // 30 minut
 // modes quickly — water may still be diverted or stationary during the transition.
 constexpr unsigned long EXTERNAL_STOP_RESUME_MS = 5UL * 60UL * 1000UL;  // 5 minutes
 
+// pH bounds for chlorine operations — applies to shock mode and pH-first priority guard (Option J).
+// Below CL_PH_MIN: water too acidic for efficient Cl oxidation.
+// Above CL_PH_MAX: Cl mostly in ineffective hypochlorite form; dosing wastes chemical.
+constexpr float CL_PH_MIN = 7.0f;
+constexpr float CL_PH_MAX = 7.6f;
+
+// Dose efficiency EMA — smoothing factor for the learned delivery baseline.
+// ~0.2 gives the last 5 doses strong influence; hardcoded for simplicity and AVR RAM savings.
+constexpr float EFFICIENCY_EMA_ALPHA = 0.2f;
+
 // Shock / super-chlorination mode
-// pH must be in this range before shock is permitted — lower pH = better chlorine oxidation.
-constexpr float SHOCK_PH_MIN  = 7.0f;
-constexpr float SHOCK_PH_MAX  = 7.6f;
 // ORP target must be within this range — 800 mV is the library's hard safety ceiling.
 constexpr float SHOCK_ORP_MIN = 600.0f;
 constexpr float SHOCK_ORP_MAX = 800.0f;
@@ -103,11 +110,11 @@ constexpr float SHOCK_ORP_MAX = 800.0f;
 constexpr float SHOCK_OVERSHOOT_MARGIN = 0.10f;
 // Hard ceiling on active shock dosing duration — silently clamped.
 constexpr uint8_t SHOCK_MAX_DURATION_HOURS = 4;
-// Post-shock safety band suppression window. Default 24 h; max 48 h; pool-size scaling deferred to M5 Option K.
+// Post-shock safety band suppression window. Default 24 h; max 48 h.
 constexpr uint8_t SHOCK_COOLDOWN_DEFAULT_HOURS = 24;
 constexpr uint8_t SHOCK_COOLDOWN_MAX_HOURS     = 48;
 // ORP must rise at least this much within SHOCK_RISE_CHECK_MS — confirms chemical delivery.
-// Pool-size scaling of the time window is deferred to M5 Option K.
+// The time window is scaled by volumeScale() at point of use in manageShock().
 constexpr unsigned long SHOCK_RISE_CHECK_MS = 20UL * 60UL * 1000UL;
 constexpr float         SHOCK_RISE_MIN_MV   = 20.0f;
 
@@ -121,6 +128,15 @@ constexpr uint16_t SHOCK_ORP_AGGRESSIVE = 800;  // heavy algae, after heavy bath
 // APA-Dose starts at 192, leaving a safe gap after the sensor library.
 constexpr uint16_t APA_DOSE_EEPROM_ADDRESS = 192;
 constexpr uint16_t APA_DOSE_MAGIC_NUMBER   = 0xABCD;
+
+// Global slot — shared static values stored once, outside per-instance ConfigData.
+// 3 bytes immediately before APA_DOSE_EEPROM_ADDRESS: [poolVolume][deadbandPct][0xA5]
+// uint16_t matches APA_DOSE_EEPROM_ADDRESS type — avoids truncation on Mega (4KB EEPROM).
+constexpr uint16_t APA_GLOBAL_EEPROM_ADDR = APA_DOSE_EEPROM_ADDRESS - 3;
+constexpr uint8_t  APA_GLOBAL_VALID_BYTE  = 0xA5;
+
+// Pool volume scaling — reference pool the library was calibrated on.
+constexpr uint8_t REFERENCE_VOLUME_M3 = 20;
 
 // Minimum safe buffer size for getSystemStatus().
 // Worst-case output: "Sensor:1000.00 SP:900.00 Band:250.00 Type:pH- Dosing:YES Alarm:Dose ineffective"
@@ -195,11 +211,10 @@ struct FeedbackState {
   float         valueAfterDose;
   uint8_t       failedAttempts;        // max 3 before ALARM_INEFFECTIVE
   FeedbackPhase phase;                 // current feedback cycle phase
-  unsigned long feedbackCheckTime;
   float         sampleSum;
   uint8_t       sampleCount;           // max AFTER_SAMPLES = 3
   uint8_t       targetSamples;
-  unsigned long nextSampleTime;
+  unsigned long nextSampleTime;        // millis() expiry for next sample window
   uint8_t       wrongDirectionCount;   // max 3 before ALARM_WRONG_DIRECTION
 };
 
@@ -244,7 +259,7 @@ private:
   ApaDoseType      dosingType;
   ApaDoseDirection phDirection;
 
-  // Boolean state — 16 flags packed into 2 bytes (vs 16 bytes as individual bools)
+  // Boolean state — 19 flags packed into 3 bytes (vs 19 bytes as individual bools)
   struct {
     bool dosingActive        : 1;
     bool blackoutMessageSent : 1;
@@ -262,6 +277,9 @@ private:
     bool outsideDosingWindow : 1;  // cached result of last window check in update()
     bool shockActive         : 1;  // this instance is running shock mode
     bool shockHoldSent       : 1;  // rate-limits "Held:shock active" on non-shock instances
+    bool deadbandSatisfied   : 1;  // set when sensor retreats past exit threshold; cleared on re-entry
+    bool phHoldSent          : 1;  // rate-limits "CL held: pH high" status message (Option J)
+    bool settleHoldSent      : 1;  // rate-limits "CL held: settling" status message (Option A)
   } flags;
 
   // System state
@@ -284,6 +302,10 @@ private:
   FilterCallback       filterPumpRunning;
   ExternalStopCallback externalStop;
   RTCReadCallback      readRTCTime;
+
+  // pH-first priority (J) and cross-settle coupling (A) — per-instance, setup-time only
+  ApaDose* _linkedPhPump       = nullptr;  // nullptr = both features disabled
+  uint8_t  _crossSettleMinutes = 0;        // 0 = Option A disabled
 
   // Startup blackout
   uint8_t       startupBlackoutMinutes;  // 0 = disabled; stored as minutes to save 3 bytes vs unsigned long
@@ -321,6 +343,12 @@ private:
   uint8_t nudgePct;   // 0 = disabled; 1–25 = nudge rate per cycle
   float   adaptedPB;  // current learned PB; seeded from proportionalBand on first enable
 
+  // Dose efficiency EMA — tracks delivery health; always active after auto proportional doses
+  float   _efficiencyEma          = 0.0f;
+  uint8_t _efficiencyCount        = 0;    // cold-start counter; alarm suppressed until > 3
+  uint8_t _lastEfficiencyPct      = 100;  // last dose ratio vs baseline (0–100); 100 = at/above baseline
+  uint8_t _efficiencyThresholdPct = 20;   // alarm fires below this %; 0 = alarm disabled
+
   // Shock mode state — 21 bytes per instance
   unsigned long shockStartTime;        // millis() at shock start
   unsigned long postShockCooldownEnd;  // millis() cooldown deadline (no RTC); 0 = inactive; also guards min inter-shock interval
@@ -333,6 +361,10 @@ private:
   // Shared across all instances — inter-pump lockout and shock interlock
   static unsigned long lastAnyDoseEnd;
   static bool          shockModeActive;  // true while any instance is shocking — blocks all others
+
+  // Shared static values — pool property and tuning parameter, one value per system
+  static uint8_t s_poolVolume;   // 0=off; valid 10–90 m³; survives factoryReset()
+  static uint8_t s_deadbandPct;  // 0=off; valid 0–20 % of PB; cleared by factoryReset()
 
   // Sensor profile helpers — read compile-time constants directly from flash; no SRAM copies
   bool isOrpProfile() const { return dosingType == DOSE_CL; }
@@ -365,6 +397,8 @@ private:
   void         manageShock();
   void         stopShock(const __FlashStringHelper* msg);
   static uint32_t toApproxHours(ApaDoseTime t);
+  static float volumeScale();    // s_poolVolume==0 → 1.0; else poolVolume/REFERENCE_VOLUME_M3
+  static void  saveGlobalSlot(); // writes poolVolume + deadbandPct + validity atomically
 
 public:
   // Constructor - one pin per pump, through MOSFET.
@@ -379,6 +413,12 @@ public:
   void setRTCCallback(RTCReadCallback rtcReader);                                  // Connect external RTC (call before begin)
   void setDosingWindow(uint8_t startHour, uint8_t endHour);                       // Restrict dosing to hour range 0-23 (call before begin)
   void setExternalStopCallback(ExternalStopCallback cb);                           // Optional: block all dosing (except priming) when cb returns true
+  // pH-first priority (J) + cross-settle coupling (A) — call AFTER both pump begin() calls.
+  // setPhPump: registers the pH peer; activates J (fixed threshold CL_PH_MAX) automatically.
+  // setCrossSettleMinutes: also activates A — CL held N min after each pH dose; 0 = off.
+  // Both features are inert (nullptr default) — omit for pH-only or independent setups.
+  void setPhPump(ApaDose* phPump);
+  void setCrossSettleMinutes(uint8_t minutes);
   bool begin(SensorReadCallback sensorReader,
              FilterCallback   filter,
              ApaDoseType      type,
@@ -407,7 +447,7 @@ public:
   // Shock / super-chlorination — DOSE_CL instances only; filter callback required
   // Hobbyist: pass SHOCK_ORP_STANDARD (or SHOCK_ORP_MILD / SHOCK_ORP_AGGRESSIVE) and current pH.
   // Pro: additionally specify max active duration (hours, clamped to 4 h) and cooldown window (hours, default 24 h, max 48 h).
-  // currentPH: pass phPump.getProbeValue() — must be in SHOCK_PH_MIN–SHOCK_PH_MAX (7.0–7.6).
+  // currentPH: pass phPump.getProbeValue() — must be in CL_PH_MIN–CL_PH_MAX (7.0–7.6).
   // Returns false if any entry guard fails (see API.md for full list).
   bool triggerShock(uint16_t targetORP, float currentPH,
                     uint8_t cooldownHours = SHOCK_COOLDOWN_DEFAULT_HOURS);
@@ -422,9 +462,20 @@ public:
   bool setDosingType(ApaDoseType newType);        // Runtime type change (DOSE_PH ↔ DOSE_CL)
   bool setPhDirection(ApaDoseDirection newDir);   // Runtime direction change; ignored for DOSE_CL
   void enableAdaptivePB(uint8_t pct);             // 0 = disable (resets learned value); 1–25 = nudge rate %
+  void    setEfficiencyThreshold(uint8_t pct);    // 0 = alarm off; default 20 (active out of the box)
+  uint8_t getEfficiencyThreshold()         const;
   void acknowledgeAlarm();
   void forceConfigurationSave();
-  void factoryReset();                            // force-stop dose/prime, reset all EEPROM fields to type-defaults, clear alarm
+  // Resets per-instance EEPROM fields to type-defaults, stops any active dose/prime/shock, clears alarm.
+  // Dead-band (tuning parameter) is cleared. Pool volume (installation parameter) is NOT touched.
+  void factoryReset();
+
+  // System-wide static values — call once in setup(); affect all pump instances.
+  // Pool volume survives factoryReset(); dead-band is cleared by factoryReset().
+  static bool    setPoolVolume(uint8_t m3);    // 10–90 m³; 0 = off (scale 1.0); false if out of range
+  static uint8_t getPoolVolume();
+  static bool    setDeadbandPct(uint8_t pct);  // 0–20 % of PB; 0 = off; false if > 20
+  static uint8_t getDeadbandPct();
 
   // Status queries
   float            getProbeValue()              const;
@@ -441,7 +492,8 @@ public:
   bool         isInExternalStopResumeDelay()    const;  // true during the mandatory 5-min settling wait after external stop clears
   bool         isOutsideDosingWindow()          const;  // true if dosing window is enabled and current hour is outside it
   bool         isConfigurationValid()           const;
-  unsigned long getLastDosingTime()        const;  // millis() when last dose ended
+  unsigned long getLastDosingTime()        const;  // millis() when last dose ended (alias kept for compatibility)
+  unsigned long getLastDosingEnd()         const;  // millis() when last dose ended; 0 if never dosed — used by linked CL pump for Option A
   unsigned long getSecondsSinceLastDose()  const;  // seconds since last dose ended; 0 if no dose yet
   unsigned long getSecondsUntilNextDose()  const;  // seconds remaining in rest period; 0 if eligible now
   uint8_t       getFailedAttempts()        const;
@@ -455,7 +507,7 @@ public:
   bool  hasDoseHistory()           const;  // false until first full dose+feedback cycle
   float getLastDoseSensorBefore()  const;  // averaged sensor value before last dose
   float getLastDoseSensorAfter()   const;  // averaged sensor value after last dose
-  float getDoseEffectiveness()     const;  // signed % of band: positive = correct direction
+  uint8_t getDoseEffectiveness()   const;  // 0–100: last dose vs EMA baseline; 100 until baseline established (3+ doses)
 
   // Adaptive proportional band
   float getAdaptedPB()             const;  // current effective PB (learned or fixed)

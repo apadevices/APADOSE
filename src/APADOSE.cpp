@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.9.0
+ * Version: 3.12.0
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -10,6 +10,8 @@
 
 unsigned long ApaDose::lastAnyDoseEnd  = 0;
 bool          ApaDose::shockModeActive = false;
+uint8_t       ApaDose::s_poolVolume    = 0;
+uint8_t       ApaDose::s_deadbandPct   = 0;
 
 // ---------------------------------------------------------------------------
 // Platform compatibility
@@ -140,6 +142,16 @@ bool ApaDose::begin(SensorReadCallback sensorReader, FilterCallback filter,
   sensorValue          = setpoint;
   lastGoodSensorTime   = millis();
 
+  // Load shared global slot (pool volume + dead-band) — same 3 bytes regardless of instance.
+  {
+    uint8_t valid = 0;
+    EEPROM.get(APA_GLOBAL_EEPROM_ADDR + 2, valid);
+    if (valid == APA_GLOBAL_VALID_BYTE) {
+      EEPROM.get(APA_GLOBAL_EEPROM_ADDR,     s_poolVolume);
+      EEPROM.get(APA_GLOBAL_EEPROM_ADDR + 1, s_deadbandPct);
+    }
+  }
+
   if (readSensor != nullptr) {
     float v     = readSensor();
     bool  valid = isfinite(v) && (isOrpProfile()
@@ -230,7 +242,7 @@ void ApaDose::update() {
   }
 
   // Post-shock cooldown expiry — millis path
-  if (postShockCooldownEnd > 0 && millis() >= postShockCooldownEnd) {
+  if (postShockCooldownEnd > 0 && (long)(millis() - postShockCooldownEnd) >= 0) {
     postShockCooldownEnd = 0;
     sendStatus(onStatusMessage, F("Post-shock normal"));
   }
@@ -383,14 +395,14 @@ void ApaDose::manageProportionalDosing() {
         sendStatus(onStatusMessage, F("Manual done"));
       } else {
         sendStatus(onStatusMessage, F("Dose done-resting"));
-        feedback.phase             = FB_WAITING;
-        feedback.feedbackCheckTime = now + currentPulse.restPeriod;
+        feedback.phase            = FB_WAITING;
+        feedback.nextSampleTime   = now + currentPulse.restPeriod;  // deadline snapshot; nextSampleTime is idle during FB_WAITING
       }
     }
     return;
   }
 
-  if (feedback.phase == FB_WAITING && now >= feedback.feedbackCheckTime) {
+  if (feedback.phase == FB_WAITING && (long)(now - feedback.nextSampleTime) >= 0) {
     startAfterDosingMeasurements();
   }
 
@@ -480,7 +492,7 @@ bool ApaDose::collectSample(unsigned long now, char prefix) {
 void ApaDose::manageFeedbackSampling() {
   unsigned long now = millis();
 
-  if (feedback.phase == FB_MEASURING_BEFORE && now >= feedback.nextSampleTime) {
+  if (feedback.phase == FB_MEASURING_BEFORE && (long)(now - feedback.nextSampleTime) >= 0) {
     if (collectSample(now, 'B')) {
       feedback.valueBeforeDose = feedback.sampleSum / feedback.targetSamples;
       feedback.phase           = FB_IDLE;
@@ -501,7 +513,7 @@ void ApaDose::manageFeedbackSampling() {
     }
   }
 
-  if (feedback.phase == FB_MEASURING_AFTER && now >= feedback.nextSampleTime) {
+  if (feedback.phase == FB_MEASURING_AFTER && (long)(now - feedback.nextSampleTime) >= 0) {
     if (collectSample(now, 'A')) {
       feedback.valueAfterDose  = feedback.sampleSum / feedback.targetSamples;
       feedback.phase           = FB_IDLE;
@@ -525,9 +537,60 @@ void ApaDose::manageFeedbackSampling() {
 
 bool ApaDose::shouldStartDosing() {
   if (lastAnyDoseEnd != 0 && millis() - lastAnyDoseEnd < INTER_PUMP_LOCKOUT_MS) return false;
+
+  if (_linkedPhPump != nullptr) {
+    // Option J — pH-first priority: suspend CL when pH too high for effective chlorination
+    if (_linkedPhPump->getProbeValue() > CL_PH_MAX) {
+      if (!flags.phHoldSent) {
+        sendStatus(onStatusMessage, F("CL held: pH high"));
+        flags.phHoldSent = true;
+      }
+      flags.settleHoldSent = false;
+      return false;
+    }
+    if (flags.phHoldSent) {
+      sendStatus(onStatusMessage, F("CL resumed: pH OK"));
+      flags.phHoldSent = false;
+    }
+
+    // Option A — cross-settle: hold CL after a pH dose to let chemistry equilibrate
+    if (_crossSettleMinutes > 0) {
+      unsigned long phLastDose = _linkedPhPump->getLastDosingEnd();
+      if (phLastDose != 0) {
+        unsigned long settleMs = (unsigned long)_crossSettleMinutes * 60000UL;
+        if ((long)(millis() - phLastDose) < (long)settleMs) {
+          if (!flags.settleHoldSent) {
+            sendStatus(onStatusMessage, F("CL held: settling"));
+            flags.settleHoldSent = true;
+          }
+          return false;
+        }
+      }
+      if (flags.settleHoldSent) {
+        sendStatus(onStatusMessage, F("CL resumed: settled"));
+        flags.settleHoldSent = false;
+      }
+    }
+  }
+
+  if (s_deadbandPct > 0) {
+    uint8_t exitPct = (s_deadbandPct > 5) ? (s_deadbandPct - 5) : 0;
+    float entryAbs  = (s_deadbandPct / 100.0f) * proportionalBand;
+    float exitAbs   = (exitPct       / 100.0f) * proportionalBand;
+    float delta     = dosesUp() ? (setpoint - sensorValue) : (sensorValue - setpoint);
+    if (flags.deadbandSatisfied) {
+      // Currently suppressed — only re-enable when error exceeds entry threshold again.
+      if (delta >= entryAbs) flags.deadbandSatisfied = false;
+      else return false;
+    }
+    if (exitPct > 0 && delta < exitAbs) {
+      flags.deadbandSatisfied = true;
+      return false;
+    }
+    if (delta < entryAbs) return false;
+  }
   float threshold = isOrpProfile() ? ORP_FEEDBACK_THRESHOLD : PH_FEEDBACK_THRESHOLD;
-  if (dosesUp())
-    return sensorValue < (setpoint - threshold);
+  if (dosesUp()) return sensorValue < (setpoint - threshold);
   return sensorValue > (setpoint + threshold);
 }
 
@@ -556,6 +619,10 @@ DosingPulse ApaDose::calculateProportionalPulse() {
     pulse.pulseDuration = 11000UL;
     pulse.restPeriod    = 20UL * 60UL * 1000UL;
   }
+
+  float vs = volumeScale();
+  pulse.pulseDuration = (unsigned long)(pulse.pulseDuration * vs);
+  pulse.restPeriod    = (unsigned long)(pulse.restPeriod    * vs);
 
 #ifdef APA_DOSE_DEBUG
   if (onStatusMessage) {
@@ -609,7 +676,7 @@ DosingPulse ApaDose::applyFeedbackCorrections(DosingPulse p) {
     p.pwmIntensity = (uint8_t)min((int)pumpMaxPWM, (int)(p.pwmIntensity * 1.3f));
   } else if (feedback.failedAttempts >= 2) {
     p.pwmIntensity  = (uint8_t)min((int)pumpMaxPWM, (int)(p.pwmIntensity * 1.5f));
-    p.pulseDuration = min(FEEDBACK_PULSE_MAX_MS, (unsigned long)(p.pulseDuration * 1.3f));
+    p.pulseDuration = min((unsigned long)(FEEDBACK_PULSE_MAX_MS * volumeScale()), (unsigned long)(p.pulseDuration * 1.3f));
   }
 
 #ifdef APA_DOSE_DEBUG
@@ -646,36 +713,59 @@ void ApaDose::startAfterDosingMeasurements() {
 }
 
 void ApaDose::evaluateFeedback() {
+  // Dose efficiency EMA — always first; core dosing infrastructure, not optional.
+  // Tracks delivery health across all auto proportional doses. Alarm fires when a dose
+  // achieves less than _efficiencyThresholdPct% of the learned baseline (0 = alarm disabled).
+  {
+    unsigned long doseDurationMs = lastDosingEnd - dosingStartTime;
+    if (doseDurationMs > 0) {
+      float delta      = fabsf(feedback.valueAfterDose - feedback.valueBeforeDose);
+      float normalized = delta / (float)doseDurationMs;
+      if (_efficiencyCount < 255) _efficiencyCount++;
+      _efficiencyEma = (_efficiencyCount == 1)
+        ? normalized
+        : (EFFICIENCY_EMA_ALPHA * normalized + (1.0f - EFFICIENCY_EMA_ALPHA) * _efficiencyEma);
+      _lastEfficiencyPct = (_efficiencyEma > 0.0f)
+        ? (uint8_t)constrain((normalized / _efficiencyEma) * 100.0f, 0.0f, 100.0f)
+        : 100;
+      if (_efficiencyCount > 3 && _efficiencyThresholdPct > 0 &&
+          _lastEfficiencyPct < _efficiencyThresholdPct) {
+        char buf[20];
+        FSTR_TO_BUF(buf, F("Pump/supply fail"), 19);
+        buf[19] = '\0';
+        triggerAlarm(ALARM_INEFFECTIVE, buf);
+        return;
+      }
+    }
+  }
+
   float change    = feedback.valueAfterDose - feedback.valueBeforeDose;
   float threshold = isOrpProfile() ? ORP_FEEDBACK_THRESHOLD : PH_FEEDBACK_THRESHOLD;
 
-  bool wrongDirection = false;
   if (dosesUp()) {
     if (change < -threshold) {
       feedback.wrongDirectionCount++;
       if (feedback.wrongDirectionCount >= 3) {
-        wrongDirection = true;
         char buf[20];
         FSTR_TO_BUF(buf, (dosingType == DOSE_CL ? F("Wrong chem-ORP?")
                                                 : F("Wrong chem-pH+?")), 19);
         buf[19] = '\0';
         triggerAlarm(ALARM_WRONG_DIRECTION, buf);
+        return;
       }
     } else { feedback.wrongDirectionCount = 0; }
   } else {
     if (change > threshold) {
       feedback.wrongDirectionCount++;
       if (feedback.wrongDirectionCount >= 3) {
-        wrongDirection = true;
         char buf[20];
         FSTR_TO_BUF(buf, F("Wrong chem-pH-?"), 19);
         buf[19] = '\0';
         triggerAlarm(ALARM_WRONG_DIRECTION, buf);
+        return;
       }
     } else { feedback.wrongDirectionCount = 0; }
   }
-
-  if (wrongDirection) return;
 
   bool effective = dosesUp() ? (change > threshold) : (change < -threshold);
 
@@ -884,9 +974,18 @@ void ApaDose::factoryReset() {
   // Clear post-shock cooldown — full clean slate on factory reset.
   postShockCooldownEnd = 0;
   memset(&postShockEndRTC, 0, sizeof(postShockEndRTC));
+  // Zero currentPulse so its restPeriod cannot block the first dose after reset.
+  // stopDosingPulse() sets lastDosingEnd; without this zero, the old restPeriod
+  // would keep dosing blocked for minutes even on a fresh start.
+  currentPulse = {0, 0, 0};
   // Reset feedback state machine so a half-finished sampling cycle cannot resume
   // against new default values and fire a spurious dose on the next update().
   memset(&feedback, 0, sizeof(feedback));
+  // Dead-band is a tuning parameter — must be the reliable escape hatch when dosing
+  // misbehaves after dead-band is set. Pool volume is an installation parameter
+  // (physical pool size) — intentionally NOT cleared here.
+  s_deadbandPct = 0;
+  saveGlobalSlot();
   resetToDefaults();
   saveConfiguration();
   sendStatus(onStatusMessage, F("Factory reset"));
@@ -909,13 +1008,13 @@ bool ApaDose::triggerShock(uint16_t targetORP, uint8_t maxDurationHours, float c
   if (externalStop != nullptr && externalStop())           return false;  // external stop active
   if (flags.alarmActive)                                   return false;  // active alarm blocks shock
   if (flags.dosingActive || flags.primingActive)           return false;  // something already running
-  if (currentPH  < SHOCK_PH_MIN  || currentPH  > SHOCK_PH_MAX)  return false;  // pH 7.0–7.6 required
+  if (currentPH  < CL_PH_MIN  || currentPH  > CL_PH_MAX)  return false;  // pH 7.0–7.6 required
   if (targetORP  < (uint16_t)SHOCK_ORP_MIN ||
       targetORP  > (uint16_t)SHOCK_ORP_MAX)               return false;  // ORP target 600–800 mV
   if (sensorValue >= (float)targetORP)                     return false;  // ORP already at or above target
 
   // Inter-shock interval guard — cooldown check (millis path)
-  if (postShockCooldownEnd > 0 && millis() < postShockCooldownEnd) return false;
+  if (postShockCooldownEnd > 0 && (long)(millis() - postShockCooldownEnd) < 0) return false;
   // Inter-shock interval guard — cooldown check (RTC path)
   if (postShockEndRTC.year != 0 && readRTCTime != nullptr) {
     ApaDoseTime now = readRTCTime();
@@ -957,8 +1056,8 @@ void ApaDose::manageShock() {
     return;
   }
 
-  // ORP rise check — one-shot at SHOCK_RISE_CHECK_MS (20 min)
-  if (shockRiseTarget != 0 && now - shockStartTime >= SHOCK_RISE_CHECK_MS) {
+  // ORP rise check — one-shot at SHOCK_RISE_CHECK_MS scaled by pool volume (larger pools need longer)
+  if (shockRiseTarget != 0 && now - shockStartTime >= (unsigned long)(SHOCK_RISE_CHECK_MS * volumeScale())) {
     if ((uint16_t)sensorValue >= shockRiseTarget) {
       shockRiseTarget = 0;  // ORP is rising — check done, never fires again
     } else {
@@ -1097,7 +1196,16 @@ bool         ApaDose::isConfigurationValid()            const { return flags.con
 uint8_t      ApaDose::getDailyDoseCount()          const { return dailyDoseCount; }
 uint8_t      ApaDose::getMaxDailyDoses()           const { return maxDailyDoses; }
 unsigned long ApaDose::getLastDosingTime()         const { return lastDosingEnd; }
+unsigned long ApaDose::getLastDosingEnd()          const { return lastDosingEnd; }
 unsigned long ApaDose::getSecondsSinceLastDose()   const { return lastDosingEnd == 0 ? 0 : (millis() - lastDosingEnd) / 1000UL; }
+
+void ApaDose::setPhPump(ApaDose* phPump)             { _linkedPhPump = phPump; }
+void ApaDose::setCrossSettleMinutes(uint8_t minutes) { _crossSettleMinutes = minutes; }
+
+void ApaDose::setEfficiencyThreshold(uint8_t pct) {
+  _efficiencyThresholdPct = pct;
+}
+uint8_t ApaDose::getEfficiencyThreshold() const { return _efficiencyThresholdPct; }
 
 unsigned long ApaDose::getSecondsUntilNextDose() const {
   if (lastDosingEnd == 0) return 0;
@@ -1115,12 +1223,7 @@ bool  ApaDose::hasDoseHistory()          const { return flags.lastDoseDataValid;
 float ApaDose::getLastDoseSensorBefore() const { return lastDoseSensorBefore; }
 float ApaDose::getLastDoseSensorAfter()  const { return lastDoseSensorAfter; }
 
-float ApaDose::getDoseEffectiveness() const {
-  if (!flags.lastDoseDataValid) return 0.0f;
-  float change = lastDoseSensorAfter - lastDoseSensorBefore;
-  if (dosingType == DOSE_PH && phDirection == PH_MINUS) change = -change;
-  return (change / proportionalBand) * 100.0f;
-}
+uint8_t ApaDose::getDoseEffectiveness() const { return _lastEfficiencyPct; }
 
 float ApaDose::getAdaptedPB()        const { return (nudgePct > 0 && adaptedPB > 0.0f) ? adaptedPB : proportionalBand; }
 bool  ApaDose::isAdaptivePBEnabled() const { return nudgePct > 0; }
@@ -1145,6 +1248,40 @@ const char* ApaDose::getVersion() { return APA_DOSE_VERSION; }
 void ApaDose::printLibraryInfo() {
   Serial.println(F("APA-Dose v" APA_DOSE_VERSION));
   Serial.println(F("APA Devices"));
+}
+
+// ---------------------------------------------------------------------------
+// Pool volume + dead-band (static — shared across all instances)
+// ---------------------------------------------------------------------------
+
+void ApaDose::saveGlobalSlot() {
+  EEPROM.put(APA_GLOBAL_EEPROM_ADDR,     s_poolVolume);
+  EEPROM.put(APA_GLOBAL_EEPROM_ADDR + 1, s_deadbandPct);
+  EEPROM.put(APA_GLOBAL_EEPROM_ADDR + 2, APA_GLOBAL_VALID_BYTE);
+#if defined(ESP8266) || defined(ESP32)
+  EEPROM.commit();
+#endif
+}
+
+bool ApaDose::setPoolVolume(uint8_t m3) {
+  if (m3 != 0 && (m3 < 10 || m3 > 90)) return false;
+  s_poolVolume = m3;
+  saveGlobalSlot();
+  return true;
+}
+uint8_t ApaDose::getPoolVolume() { return s_poolVolume; }
+
+bool ApaDose::setDeadbandPct(uint8_t pct) {
+  if (pct > 20) return false;
+  s_deadbandPct = pct;
+  saveGlobalSlot();
+  return true;
+}
+uint8_t ApaDose::getDeadbandPct() { return s_deadbandPct; }
+
+float ApaDose::volumeScale() {
+  if (s_poolVolume == 0) return 1.0f;
+  return (float)s_poolVolume / (float)REFERENCE_VOLUME_M3;
 }
 
 // ---------------------------------------------------------------------------
@@ -1185,9 +1322,9 @@ void ApaDose::saveConfiguration() {
   config.proportionalBand = proportionalBand;
   config.dosingType       = dosingType;
   config.phDirection      = phDirection;
-  config.nudgePct         = nudgePct;
-  config.adaptedPB        = adaptedPB;
-  config.checksum         = calculateChecksum(config);
+  config.nudgePct  = nudgePct;
+  config.adaptedPB = adaptedPB;
+  config.checksum  = calculateChecksum(config);
 
   EEPROM.put(eepromBaseAddress, config);
 #if defined(ESP8266) || defined(ESP32)
@@ -1234,4 +1371,8 @@ void ApaDose::resetToDefaults() {
   phDirection      = PH_PLUS;
   nudgePct         = 0;
   adaptedPB        = 0.0f;
+  // EMA learned state cleared — threshold is an integrator value set in setup(), not reset here
+  _efficiencyEma     = 0.0f;
+  _efficiencyCount   = 0;
+  _lastEfficiencyPct = 100;
 }
