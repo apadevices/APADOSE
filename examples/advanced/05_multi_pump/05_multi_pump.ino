@@ -196,6 +196,26 @@ void setup() {
   algiPump.setCallbacks(onAlarm, onAlarmCleared, onStatus);
   algiPump.begin(nullptr, filterRunning, DOSE_PH, PH_PLUS, 0, 1);
 
+  // System-wide parameters — call AFTER begin() so EEPROM is initialised on all platforms.
+  // Both values apply to all pump instances simultaneously and are saved to EEPROM.
+  //
+  // Pool volume scales pulse duration, rest period, and shock rise-check window.
+  //   setPoolVolume(0) = disabled (1:1 reference behaviour, backward compatible).
+  //   Survives factoryReset() — pool size is a physical installation fact.
+  ApaDose::setPoolVolume(35);   // m³ — set to your actual pool volume (10–90)
+
+  // Dead-band suppresses dosing when the error is within this % of the proportional band.
+  //   0 = disabled (default). Valid range: 0–20 %. Cleared by factoryReset().
+  //   Entry threshold = set value; exit threshold = max(0, entry − 5%) — prevents oscillation.
+  ApaDose::setDeadbandPct(10);  // 10 % → pH: ±0.10 entry / ±0.05 exit; ORP: ±10 mV / ±5 mV
+
+  // --- pH-first priority + cross-settle coupling (call AFTER both begin() calls) ---
+  // Option J: automatically suspends CL dosing when pH > 7.6 — chlorine is ineffective above this.
+  // Option A: holds CL for N minutes after a pH dose to let chemistry equilibrate.
+  // Both are disabled by default. Uncomment to enable (requires both phPump and clPump instances).
+  // clPump.setPhPump(&phPump);          // register the link — activates Option J automatically
+  // clPump.setCrossSettleMinutes(15);   // Option A: hold CL 15 min after pH doses (0 = off)
+
   Serial.println(F("Ready. Press SHOCK button to trigger pro shock (770 mV, 3 h max, 24 h cooldown)."));
 }
 
