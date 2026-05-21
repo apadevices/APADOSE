@@ -91,6 +91,24 @@ void setup() {
   if (!clPump.begin(getORP, filterRunning, DOSE_CL, CL_PLUS, 20, 12))
     Serial.println("[INFO] clPump: no saved config — defaults loaded.");
 
+  // --- Pool size scaling (call AFTER begin) ---
+  // The library is calibrated for a 20 m³ reference pool.
+  // Pools above ~30 m³ need this — without it, pulses are too short and the
+  // pump will never converge to setpoint. Set once; survives factoryReset().
+  // ApaDose::setPoolVolume(35);  // uncomment and set to YOUR pool volume in m³ (10–90)
+
+  // --- Dead-band (call AFTER begin, optional) ---
+  // Suppresses dosing when error is small — reduces pump cycles when pool is near setpoint.
+  // 10 % means: pH ±0.10 entry / ±0.05 exit; ORP ±10 mV / ±5 mV. Cleared by factoryReset().
+  // ApaDose::setDeadbandPct(10);  // uncomment to enable; 0–20 % of proportional band
+
+  // --- pH-first priority + cross-settle coupling (call AFTER both begin() calls) ---
+  // Option J: automatically suspends CL dosing when pH > 7.6 — chlorine is ineffective above this.
+  // Option A: holds CL for N minutes after a pH dose to let chemistry equilibrate.
+  // Both are disabled by default. Uncomment to enable (requires both phPump and clPump instances).
+  // clPump.setPhPump(&phPump);          // register the link — activates Option J automatically
+  // clPump.setCrossSettleMinutes(15);   // Option A: hold CL 15 min after pH doses (0 = off)
+
   Serial.println(F("Ready. Press SHOCK button to trigger shock dosing."));
   Serial.println(F("SHOCK button requires: filter running, pH 7.0-7.6, ORP below target."));
 }
