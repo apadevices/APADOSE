@@ -97,7 +97,7 @@ bool          tempPending     = false;
 // --- APA-Dose pumps ---
 // Each instance must have a unique EEPROM base address, spaced by sizeof(ConfigData).
 ApaDose phPump(PIN_PH_PUMP);                                                // EEPROM 192 (default)
-ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 206
+ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 212
 
 float getpH()  { return cachedpH; }
 float getORP() { return cachedORP; }
@@ -362,23 +362,36 @@ void setup() {
   // APA-Dose — callbacks before begin()
   phPump.setPumpRange(65, 255);        // 65 = PWM start threshold — measure for YOUR pump
   // phPump.setPumpFlowRate(450.0);    // optional: measured mL/min at max PWM — enables getDailyVolumeMl()
-  phPump.setDosingType(DOSE_PH_MINUS); // acid — doses when pH is above setpoint
-  // pH control is one-directional — never run DOSE_PH_PLUS and DOSE_PH_MINUS on the same pool.
   phPump.setRTCCallback(getRTC);
   phPump.setDosingWindow(8, 20);
   phPump.setCallbacks(onAlarm, onAlarmCleared, onStatus);
-  phPump.begin(getpH, filterRunning, 20, 6);
+  // PH_MINUS = acid (lowers pH); use PH_PLUS for a base pump (raises pH)
+  phPump.begin(getpH, filterRunning, DOSE_PH, PH_MINUS, 20, 6);
 
   clPump.setPumpRange(65, 255);        // measure start threshold for this pump separately
   // clPump.setPumpFlowRate(450.0);    // optional: measured mL/min at max PWM — enables getDailyVolumeMl()
-  // setDosingType(DOSE_CL) before begin() is critical on first boot:
-  // it ensures ORP defaults (setpoint 700, band 100) are written to EEPROM
-  // rather than pH defaults. On subsequent boots EEPROM is restored correctly.
-  clPump.setDosingType(DOSE_CL);
   clPump.setRTCCallback(getRTC);
   clPump.setDosingWindow(8, 20);
   clPump.setCallbacks(onAlarm, onAlarmCleared, onStatus);
-  clPump.begin(getORP, filterRunning, 20, 12);
+  clPump.begin(getORP, filterRunning, DOSE_CL, CL_PLUS, 20, 12);
+
+  // --- Pool size scaling (call AFTER begin) ---
+  // The library is calibrated for a 20 m³ reference pool.
+  // Pools above ~30 m³ need this — without it, pulses are too short and the
+  // pump will never converge to setpoint. Set once; survives factoryReset().
+  // ApaDose::setPoolVolume(35);  // uncomment and set to YOUR pool volume in m³ (10–90)
+
+  // --- Dead-band (call AFTER begin, optional) ---
+  // Suppresses dosing when error is small — reduces pump cycles when pool is near setpoint.
+  // 10 % means: pH ±0.10 entry / ±0.05 exit; ORP ±10 mV / ±5 mV. Cleared by factoryReset().
+  // ApaDose::setDeadbandPct(10);  // uncomment to enable; 0–20 % of proportional band
+
+  // --- pH-first priority + cross-settle coupling (call AFTER both begin() calls) ---
+  // Option J: automatically suspends CL dosing when pH > 7.6 — chlorine is ineffective above this.
+  // Option A: holds CL for N minutes after a pH dose to let chemistry equilibrate.
+  // Both are disabled by default. Uncomment to enable (requires both phPump and clPump instances).
+  // clPump.setPhPump(&phPump);          // register the link — activates Option J automatically
+  // clPump.setCrossSettleMinutes(15);   // Option A: hold CL 15 min after pH doses (0 = off)
 
   lcd.clear();
 }
