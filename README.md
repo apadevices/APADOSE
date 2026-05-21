@@ -170,11 +170,13 @@ Every automatic dose passes through six phases:
   │        ▼                                               │
   │  ⑥ EVALUATE FEEDBACK                                    │
   │        │  update EMA delivery baseline                   │
-  │        ├─ direction wrong? ──► boost (+30 %/+50 % PWM)  │
-  │        │                       alarm after 3 consecutive │
   │        ├─ EMA ratio < threshold? (default 20 %)          │
   │        │       └──────────────► ALARM_INEFFECTIVE        │
-  │        └─ ok ──► reset fail counter, repeat cycle        │
+  │        ├─ direction wrong ×3? ──► ALARM_WRONG_DIRECTION  │
+  │        ├─ sensor moved enough?                           │
+  │        │     yes ──► failedAttempts=0; adaptive PB nudge │
+  │        └─     no  ──► failedAttempts++; boost next dose  │
+  │                       alarm after 3 (ALARM_INEFFECTIVE)  │
   └────────────────────────┬────────────────────────────────┘
                            │ repeat
                            ▼
