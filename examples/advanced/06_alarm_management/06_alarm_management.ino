@@ -20,7 +20,12 @@
  *
  * Alarm behaviour summary:
  *   ALARM_WRONG_DIRECTION  — requires ACK button
- *   ALARM_INEFFECTIVE      — requires ACK button
+ *   ALARM_INEFFECTIVE      — requires ACK button; two independent trigger paths:
+ *                              • EMA path: last dose achieved < efficiency threshold (default 20%)
+ *                                of the learned delivery baseline — catches empty tank or pump
+ *                                failure after 1–3 bad doses. getDoseEffectiveness() shows the ratio.
+ *                              • 3-strike path: sensor shows no meaningful response on 3 consecutive
+ *                                doses — cold-start safety net before baseline is established.
  *   ALARM_DAILY_LIMIT      — requires ACK button
  *   ALARM_SAFETY_BAND      — auto-clears when sensor returns to safe range
  *   ALARM_INVALID_PARAM    — never latches; silent rejection only
@@ -52,7 +57,7 @@ const uint16_t LONG_PRESS_MS     = 2000;
 // sizeof(ConfigData). Without unique addresses both pumps would overwrite
 // the same bytes and corrupt each other's saved configuration on every boot.
 ApaDose phPump(PIN_PH_PUMP);                                                // EEPROM 192 (default)
-ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 206
+ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 212
 
 float getpH()         { return 7.2; /* replace */ }
 float getORP()        { return 640; /* replace */ }
@@ -109,6 +114,24 @@ void onStatus(const char* msg) {
   Serial.println(msg);
 }
 
+// Print dose delivery health for one pump — call from printAlarmStatus().
+// getDoseEffectiveness() returns 0–100: last dose as % of the EMA learned baseline.
+// Useful context when ALARM_INEFFECTIVE fires: shows how far delivery has dropped.
+void printDelivery(const char* name, ApaDose& pump) {
+  Serial.print(F("  ")); Serial.print(name);
+  if (pump.hasDoseHistory()) {
+    Serial.print(F(" delivery: "));
+    Serial.print(pump.getDoseEffectiveness());
+    Serial.print(F("%  (before: "));
+    Serial.print(pump.getLastDoseSensorBefore(), 2);
+    Serial.print(F(" -> after: "));
+    Serial.print(pump.getLastDoseSensorAfter(), 2);
+    Serial.println(F(")"));
+  } else {
+    Serial.println(F(" delivery: warming up (<3 doses)"));
+  }
+}
+
 // --- Alarm status report ---
 void printAlarmStatus() {
   Serial.println(F("--- Alarm Status ---"));
@@ -121,6 +144,7 @@ void printAlarmStatus() {
   } else {
     Serial.println(F("  pH  OK"));
   }
+  printDelivery("pH ", phPump);
 
   if (clPump.isAlarmActive()) {
     Serial.print(F("  CL  ALARM : ")); Serial.println(clPump.getAlarmMessage());
@@ -130,6 +154,7 @@ void printAlarmStatus() {
   } else {
     Serial.println(F("  CL  OK"));
   }
+  printDelivery("CL ", clPump);
 
   Serial.println(F("--------------------"));
 }
@@ -186,19 +211,39 @@ void setup() {
   // Separate callbacks per pump for clean identification in Serial log
   phPump.setPumpRange(65, 255);        // 65 = PWM start threshold — measure for YOUR pump
   // phPump.setPumpFlowRate(450.0);    // optional: measured mL/min at max PWM — enables getDailyVolumeMl()
-  phPump.setDosingType(DOSE_PH_MINUS); // acid — doses when pH is above setpoint
-  // pH control is one-directional — never run DOSE_PH_PLUS and DOSE_PH_MINUS on the same pool.
   phPump.setCallbacks(onPhAlarm, onPhAlarmCleared, onStatus);
-  phPump.begin(getpH, filterRunning, 20, 6);
+  // PH_MINUS = acid (lowers pH); use PH_PLUS for a base pump (raises pH)
+  phPump.begin(getpH, filterRunning, DOSE_PH, PH_MINUS, 20, 6);
 
   clPump.setPumpRange(65, 255);        // measure start threshold for this pump separately
   // clPump.setPumpFlowRate(450.0);    // optional: measured mL/min at max PWM — enables getDailyVolumeMl()
-  // setDosingType(DOSE_CL) before begin() is critical on first boot:
-  // it ensures ORP defaults (setpoint 700, band 100) are written to EEPROM
-  // rather than pH defaults. On subsequent boots EEPROM is restored correctly.
-  clPump.setDosingType(DOSE_CL);
   clPump.setCallbacks(onClAlarm, onClAlarmCleared, onStatus);
-  clPump.begin(getORP, filterRunning, 20, 12);
+  clPump.begin(getORP, filterRunning, DOSE_CL, CL_PLUS, 20, 12);
+
+  // --- Pool size scaling (call AFTER begin) ---
+  // The library is calibrated for a 20 m³ reference pool.
+  // Pools above ~30 m³ need this — without it, pulses are too short and the
+  // pump will never converge to setpoint. Set once; survives factoryReset().
+  // ApaDose::setPoolVolume(35);  // uncomment and set to YOUR pool volume in m³ (10–90)
+
+  // --- Dead-band (call AFTER begin, optional) ---
+  // Suppresses dosing when error is small — reduces pump cycles when pool is near setpoint.
+  // 10 % means: pH ±0.10 entry / ±0.05 exit; ORP ±10 mV / ±5 mV. Cleared by factoryReset().
+  // ApaDose::setDeadbandPct(10);  // uncomment to enable; 0–20 % of proportional band
+
+  // --- pH-first priority + cross-settle coupling (call AFTER both begin() calls) ---
+  // Option J: automatically suspends CL dosing when pH > 7.6 — chlorine is ineffective above this.
+  // Option A: holds CL for N minutes after a pH dose to let chemistry equilibrate.
+  // Both are disabled by default. Uncomment to enable (requires both phPump and clPump instances).
+  // clPump.setPhPump(&phPump);          // register the link — activates Option J automatically
+  // clPump.setCrossSettleMinutes(15);   // Option A: hold CL 15 min after pH doses (0 = off)
+
+  // --- Dose efficiency threshold (call AFTER begin, optional; applies per pump) ---
+  // The library tracks delivery health via an EMA of normalised sensor shift per ms of pump run.
+  // ALARM_INEFFECTIVE fires when a dose achieves less than this % of the learned baseline.
+  // Default is 20 (active out of the box after 3 warm-up doses). Pass 0 to disable the alarm.
+  // phPump.setEfficiencyThreshold(20);  // default — set lower to tolerate more variance
+  // clPump.setEfficiencyThreshold(20);  // independent per pump
 
   Serial.println(F("APA-Dose Alarm Management Demo"));
   Serial.println(F("Short press ACK = ack first alarm | Long press (2s) = ack all"));
