@@ -3,7 +3,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.9.0** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.12.0** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
@@ -13,8 +13,12 @@ Part of the **APA Devices** product family.
 - **True proportional output** — both PWM speed and pulse duration scale continuously with error; never bang-bang on/off
 - **Closed-loop feedback** — 2 sensor readings averaged before each dose, 3 after; verifies the water actually moved toward setpoint
 - **Adaptive dose correction** — first failed dose gets +30 % PWM boost; second gets +50 % PWM and doubled pulse time; alarm fires only after three consecutive failures — no human intervention needed between attempts
-- **Dose effectiveness reporting** — `getDoseEffectiveness()`, `getLastDoseSensorBefore()`, `getLastDoseSensorAfter()` expose a percentage score and raw before/after sensor averages for display or logging; check `hasDoseHistory()` first — all three return `0.0` until the first complete dose+feedback cycle
+- **Dose delivery health monitoring** — EMA-learned baseline continuously tracks each pump's normal chemical delivery; `getDoseEffectiveness()` returns 0–100 (last dose as a % of the learned baseline; 100 until baseline established after 3 doses); `ALARM_INEFFECTIVE` fires automatically when delivery drops below `setEfficiencyThreshold()` (default 20, active out of the box; pass 0 to disable); `getLastDoseSensorBefore()` / `getLastDoseSensorAfter()` expose raw before/after sensor averages for display or logging; check `hasDoseHistory()` first
 - **Adaptive proportional band** — optional self-learning mode: after each feedback cycle the library nudges the effective band up when the sensor overshot, down when it undershot, converging toward the pool's true chemical response; disabled by default, enabled with `enableAdaptivePB(nudgePct)` (1–25% per cycle); learned value is EEPROM-persistent per pump
+- **Pool volume scaling** — one call (`ApaDose::setPoolVolume(m3)`) scales pulse duration, rest period, and feedback timing for pools between 10–90 m³; reference is 20 m³; pools above ~30 m³ require this to converge to setpoint; disabled by default for backward compatibility; survives `factoryReset()`
+- **Dead-band** — optional noise filter (`ApaDose::setDeadbandPct(pct)`, 0–20% of proportional band) suppresses dosing when the error is small; asymmetric entry/exit hysteresis prevents oscillation at the boundary; same % value applies correctly to both pH and ORP; cleared by `factoryReset()`
+- **pH-first dosing priority (J)** — `clPump.setPhPump(&phPump)` links the CL pump to the pH pump; CL dosing is automatically suspended when pH exceeds 7.6 (`CL_PH_MAX`), where chlorine is mostly ineffective; resumes when pH returns below threshold; off by default
+- **Cross-settle coupling (A)** — `clPump.setCrossSettleMinutes(n)` holds CL dosing for N minutes after each pH dose, preventing the pH/ORP see-saw caused by acid doses temporarily depressing ORP during mixing; off by default; requires `setPhPump()` first
 
 **Safety**
 - **Full alarm system** — wrong direction, ineffective dose, safety band, daily dose limit, sensor fault (`ALARM_SENSOR_FAULT`) — all built-in and reported via callback or polling
@@ -22,6 +26,7 @@ Part of the **APA Devices** product family.
 - **External stop** — optional callback from any external system (maintenance mode, backwash, cover) blocks all dosing immediately; a mandatory 5-minute settling time applies after the signal clears before dosing resumes
 - **Setpoint range enforcement** — pH 6.8 – 7.8 and ORP 400 – 850 mV enforced on every write; out-of-range values rejected before reaching EEPROM
 - **Inter-pump chemical lockout** — 90-second enforced gap after any pump instance doses; prevents incompatible chemicals meeting at the same pipe inlet
+- **Startup blackout** — optional N-minute dosing hold after power-on (`blackoutMinutes` parameter in `begin()`); gives electrochemical sensors time to stabilize before the first dose decision; `isInStartupBlackout()` exposes the state for display
 
 **Flexibility**
 - **1 to 4 independent pumps** — each instance is a full isolated state machine with its own dosing cycle, feedback loop, alarm state, and EEPROM block
@@ -43,7 +48,7 @@ Part of the **APA Devices** product family.
 - **RTC scheduling** — optional: daily counter reset at midnight, dosing window by hour; library works fully without an RTC
 - **Non-blocking** — pure `millis()` state machine; zero `delay()` calls; safe to call every `loop()` iteration alongside any other code
 - **Universal hardware support** — AVR (Uno through Mega), ESP8266, ESP32, STM32 — same source, no `#ifdef` in user code
-- **Minimal footprint** — two-pump sketch: ~15 KB flash / 791 B RAM on Uno; ~300 B RAM per additional instance; 16 boolean flags packed into 2 bytes
+- **Minimal footprint** — two-pump sketch: ~18 KB flash / 811 B RAM on Uno; ~300 B RAM per additional instance; 19 boolean flags packed into 3 bytes; pool volume and dead-band add 2 bytes SRAM total (shared across all instances) and 3 bytes EEPROM
 - **No required dependencies** — the library itself needs only `<Arduino.h>` and `<EEPROM.h>`; RTClib (+ Adafruit BusIO) is required only when using an RTC for scheduling — not needed without one
 
 ---
@@ -134,28 +139,28 @@ Every automatic dose passes through six phases:
 ```
   ┌─────────────────────────────────────────────────────────┐
   │                                                         │
-  │  ① SAMPLE BEFORE     2 readings × 30 s apart            │
+  │  ① SAMPLE BEFORE     2 readings × 30 s apart           │
   │        │             averaged → before-dose value       │
-  │        ▼                                                │
+  │        ▼                                               │
   │  ② CALCULATE PULSE                                      │
   │        │   error %  =  |setpoint − reading| / band      │
   │        │   PWM      ∝  error %   (proportional)         │
   │        │   time     ∝  error %   (2 – 11 s)             │
   │        │   rest     ∝  error %   (5 – 20 min)           │
-  │        ▼                                                │
+  │        ▼                                               │
   │  ③ RUN PUMP          analogWrite(PWM) for pulse time    │
-  │        │                                                │
-  │        ▼                                                │
+  │        │                                               │
+  │        ▼                                               │
   │  ④ REST              chemical mixes into pool water     │
   │        │             (5 – 20 min, proportional to dose) │
-  │        ▼                                                │
-  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart            │
+  │        ▼                                               │
+  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart           │
   │        │             averaged → after-dose value        │
-  │        ▼                                                │
-  │  ⑥ EVALUATE FEEDBACK  did the sensor move correctly?    │
+  │        ▼                                               │
+  │  ⑥ EVALUATE FEEDBACK  did the sensor move correctly?   │
   │        ├─ yes ──► reset fail counter, repeat cycle      │
   │        └─ no  ──► boost next dose (+30 % / +50 % PWM)   │
-  │                   alarm after 3 consecutive failures    │
+  │                   alarm after 3 consecutive failures     │
   └────────────────────────┬────────────────────────────────┘
                            │ repeat
                            ▼
@@ -187,7 +192,7 @@ Most safety features are always active with no configuration required. Two featu
 | **Startup blackout** | Optional delay (0 – 60 min) after boot before the first dose. Prevents overdosing after a warm restart when the water chemistry is still in transition. Enabled by passing a non-zero `blackoutMinutes` to `begin()`; default is 0 (disabled). |
 | **Safety band** | If the sensor drifts beyond `min(band × 1.5, hardCap)` from setpoint, `ALARM_SAFETY_BAND` fires and dosing stops. The check runs every 10 s via the sensor read cycle — not only when a dose is about to start. Clears automatically when the sensor recovers. Hard caps: **±1.0 pH** · **±150 mV ORP**. |
 | **Wrong direction detection** | If the sensor moves the wrong way on 3 consecutive cycles, `ALARM_WRONG_DIRECTION` fires. Catches wrong chemical installed or reversed pump wiring before significant harm occurs. |
-| **Ineffective dose detection** | If the sensor shows no response after 3 dose attempts, `ALARM_INEFFECTIVE` fires. Catches empty container, blocked tube, or failed pump. |
+| **Ineffective dose detection** | `ALARM_INEFFECTIVE` fires when the EMA delivery ratio drops below the configured threshold (default 20%, active out of the box), when the sensor shows no response after 3 consecutive dose attempts, or when ORP fails to rise during shock. Catches empty container, blocked tube, or failed pump. |
 | **Manual dose ceiling** | `triggerManualDose()` clamps duration to 5 minutes regardless of what is passed. Prevents runaway from automation code errors. |
 | **Daily dose limit** | Optional maximum doses per day. Enabled by passing a non-zero `maxDailyDoses` to `begin()`; default is 0 (no limit). `ALARM_DAILY_LIMIT` fires when reached and requires human acknowledgment before dosing resumes. The counter resets every 24 h — at real midnight when an RTC callback is registered, every 24 h from boot without one. |
 | **Stale sensor / sensor fault** | If the sensor callback returns invalid or out-of-range values continuously for 2 minutes, or returns no valid value at all for 30 minutes, `ALARM_SENSOR_FAULT` fires and dosing stops. Clears automatically when the sensor recovers — no acknowledgment required. Prevents dosing against a frozen or disconnected sensor. |
@@ -207,7 +212,7 @@ Alarms stop the pump immediately. Each alarm is reported through the `onAlarmTri
 | Alarm | Trigger | Recovery |
 |-------|---------|----------|
 | `ALARM_WRONG_DIRECTION` | Sensor moved wrong way 3× in a row | Fix chemical or wiring → `acknowledgeAlarm()` |
-| `ALARM_INEFFECTIVE` | No sensor response after 3 doses | Fix pump or supply → `acknowledgeAlarm()` |
+| `ALARM_INEFFECTIVE` | EMA delivery ratio below threshold, no sensor response after 3 doses, or no ORP rise during shock | Fix pump or supply → `acknowledgeAlarm()` |
 | `ALARM_SAFETY_BAND` | Sensor beyond safety band | Automatic when sensor returns to safe range |
 | `ALARM_DAILY_LIMIT` | Max daily doses reached | `acknowledgeAlarm()` (counter auto-resets next midnight / 24 h) |
 | `ALARM_SENSOR_FAULT` | Invalid/out-of-range readings for 2 min, or no valid reading for 30 min | Automatic when sensor recovers — no acknowledgment needed |
@@ -250,7 +255,8 @@ void loop() {
 }
 ```
 
-> See **`examples/advanced/06_alarm_management/`** for a complete alarm UI with LCD and an acknowledge button.  
+> See **`examples/advanced/06_alarm_management/`** for a complete alarm UI with acknowledge button — documents both `ALARM_INEFFECTIVE` trigger paths (EMA efficiency and 3-strike) and shows `getDoseEffectiveness()` alongside the alarm state for every periodic status print.  
+> See **`examples/intermediate/03_serial_diagnostics/`** for interactive serial diagnostics including per-dose delivery health output: `getDoseEffectiveness()`, `getLastDoseSensorBefore()` / `getLastDoseSensorAfter()`, and EMA warm-up state.  
 > See **`examples/expert/07_apa_serial/`** for a serial interface with full alarm reporting.
 
 ---
@@ -476,6 +482,10 @@ Call setup methods in this order — order matters on first boot:
 6. setCallbacks()               register alarm/status callbacks BEFORE begin()
 7. begin()                      connect sensor, set type + direction, load EEPROM, start library
                                 returns false if EEPROM data was corrupt — defaults are used, safe to continue
+8. ApaDose::setPoolVolume()     optional — system-wide pool size scaling (static, affects all instances)
+   ApaDose::setDeadbandPct()    optional — system-wide dosing dead-band (static, affects all instances)
+                                both must come AFTER begin() — EEPROM must be initialised first
+                                can also be called at runtime from loop() — takes effect immediately
 ```
 
 ### `begin()` parameters
@@ -593,11 +603,11 @@ Verified build sizes (`examples/basic/02_ph_and_cl` — two-pump sketch, release
 
 | Board | Flash | RAM |
 |-------|-------|-----|
-| Arduino Uno (ATmega328P) | 15,344 B / 32,256 B (48%) | 791 B / 2,048 B (39%) |
-| Arduino Mega 2560 | 16,410 B / 253,952 B (6%) | 791 B / 8,192 B (10%) |
-| ESP32-DevKit | 291,345 B / 1,310,720 B (22%) | 22,104 B / 327,680 B (7%) |
-| NodeMCU v2 (ESP8266) | 277,403 B / 1,044,464 B (27%) | 28,864 B / 81,920 B (35%) |
-| Blue Pill (STM32F103C8T6) | 27,864 B / 65,536 B (43%) | 2,660 B / 20,480 B (13%) |
+| Arduino Uno (ATmega328P) | 18,356 B / 32,256 B (57%) | 811 B / 2,048 B (40%) |
+| Arduino Mega 2560 | 19,412 B / 253,952 B (8%) | 811 B / 8,192 B (10%) |
+| ESP32-DevKit | 293,597 B / 1,310,720 B (22%) | 22,136 B / 327,680 B (7%) |
+| NodeMCU v2 (ESP8266) | 279,911 B / 1,044,464 B (27%) | 28,888 B / 81,920 B (35%) |
+| Blue Pill (STM32F103C8T6) | 30,004 B / 65,536 B (46%) | 2,692 B / 20,480 B (13%) |
 
 ESP flash totals include the full Arduino framework (WiFi stack, OS); the library itself adds a few KB on top of a bare sketch.
 

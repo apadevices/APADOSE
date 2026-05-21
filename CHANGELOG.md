@@ -5,6 +5,160 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.12.0] — 2026-05-21
+
+### Added
+
+- **Dose efficiency tracking** — built-in delivery health monitor running after every automatic
+  proportional dose. Uses an exponential moving average (EMA, α = 0.2, ~last 5 doses) of
+  normalised delta per millisecond of pump run time to learn what normal delivery looks like
+  for this specific pump, chemical, and pool — no chemistry constants, no user calibration.
+
+- **`ALARM_INEFFECTIVE` — efficiency path** — when a dose achieves less than the configured
+  threshold percent of the learned EMA baseline, `ALARM_INEFFECTIVE` fires with message
+  `"Pump/supply fail"`. Default threshold 20 % (active out of the box after 3 warm-up doses).
+  Catches empty tank, air lock, and pump failure after 1–3 bad doses instead of waiting for
+  the existing 3-strike `failedAttempts` path (which remains as a cold-start safety net).
+
+- **`setEfficiencyThreshold(uint8_t pct)`** — configures the alarm trigger level.
+  `0` = alarm disabled, tracking still active. Default 20. Set in `setup()` like `setPhPump()` — not EEPROM-persisted.
+
+- **`getEfficiencyThreshold()`** — returns the current threshold value.
+
+- **`getDoseEffectiveness()`** — reworked from a signed-band proxy to the real EMA ratio:
+  0–100 % of learned baseline. Returns 100 during cold-start (< 3 doses). Read any time
+  for display; alarm fires automatically when threshold is exceeded.
+
+- **`EFFICIENCY_EMA_ALPHA`** — new public constant (`0.2f`); exposed for documentation
+  purposes; not intended for user tuning.
+
+### Changed
+
+- **`getDoseEffectiveness()`** return type changed `float → uint8_t` — now returns the real
+  EMA ratio (0–100 %) instead of a signed proportional-band proxy.
+
+- **`APA_DOSE_VERSION_MINOR`** corrected: was `10` (copy error from 3.10.x), now `12`.
+
+### Behaviour notes
+
+- Tracking is **core infrastructure**, not optional — it runs regardless of threshold setting.
+- Excludes manual, shock, and prime doses — only automatic proportional dose cycles update the EMA.
+- Adaptive PB nudge is inherently frozen when the efficiency alarm fires (early return in
+  `evaluateFeedback()` prevents the nudge path from running).
+- `factoryReset()` resets EMA state (ema, count, ratio) via `resetToDefaults()`. Threshold is an integrator value set in `setup()` — not touched by factory reset.
+- `acknowledgeAlarm()` does **not** reset EMA or count — baseline persists across alarm cycles.
+
+---
+
+## [3.11.0] — 2026-05-21
+
+### Added
+
+- **pH-first dosing priority (Option J)** — `clPump.setPhPump(&phPump)` registers a pH peer on the
+  CL instance. When pH exceeds `CL_PH_MAX` (7.6), CL automatic dosing is suspended until pH drops
+  back below threshold. Chlorine is mostly in the ineffective hypochlorite form above 7.6; dosing
+  into high-pH water wastes chemical and produces misleading ORP feedback. Status message
+  `"CL held: pH high"` fires once on activation and again each time the condition re-triggers.
+
+- **Cross-settle coupling (Option A)** — `clPump.setCrossSettleMinutes(n)` adds a configurable
+  hold on CL dosing after each pH dose completes. Prevents the pH/ORP see-saw: acid doses
+  temporarily depress ORP during mixing, which can trigger a premature CL dose before chemistry
+  has equilibrated. Status message `"CL held: settling"` fires during the hold window.
+  `n = 0` (default) disables Option A; Option J remains active independently via `setPhPump()`.
+
+  Both features require a linked pH pump instance and are off by default:
+  ```cpp
+  clPump.setPhPump(&phPump);          // J active immediately; A off until setCrossSettleMinutes
+  clPump.setCrossSettleMinutes(15);   // A: hold CL 15 min after each pH dose
+  ```
+
+- **`getLastDosingEnd()`** — new public getter returning `lastDosingEnd` (millis() when last dose
+  ended; 0 if never dosed). Used internally by the linked CL pump for Option A; also available
+  for display or logging in user sketches.
+
+### Changed
+
+- **`SHOCK_PH_MIN` / `SHOCK_PH_MAX` renamed to `CL_PH_MIN` / `CL_PH_MAX`** — same values (7.0 / 7.6),
+  same purpose. The old names implied shock-only; both shock and Option J enforce this pH range
+  for the same chemical reason. No behaviour change in `triggerShock()`.
+
+---
+
+## [3.10.1] — 2026-05-20
+
+### Fixed
+
+- **API.md — priming rest period**: Removed incorrect claim that a minimum 5-minute rest is imposed after `triggerPrime()`. No rest period is imposed; normal dosing resumes immediately.
+- **API.md — `setPoolVolume()` / `setDeadbandPct()` ordering**: Corrected examples to show both calls after `begin()`. On ESP8266/ESP32, calling them before `begin()` silently discards the values because `EEPROM.begin()` has not run yet. Both functions may also be called from `loop()` at runtime.
+- **API.md — Setup Order table**: Added step 8 for `ApaDose::setPoolVolume()` and `ApaDose::setDeadbandPct()`.
+- **API.md — `triggerManualDose()` return conditions**: Replaced incomplete 4-condition list with full 7-condition table matching the source code.
+- **API.md — `CL_PLUS` constant**: Added `constexpr CL_PLUS` to the `ApaDoseDirection` section with explanation that it is an alias for `PH_PLUS`, not an enum member.
+- **API.md — Quick Start `filterRunning()`**: Added missing `== HIGH` comparison.
+- **API.md — EEPROM Layout write method**: Corrected `` `EEPROM.write()` `` to `` `EEPROM.put()` ``.
+- **README.md — build table**: Updated flash/SRAM figures for all 5 platforms with actual measurements from example 02; corrected "~15 KB flash" feature bullet to "~17 KB flash".
+- **Examples 01–04, 06–10**: Added commented-out `ApaDose::setPoolVolume()` block (and `setDeadbandPct()` for two-pump sketches) consistent with example 02.
+- **keywords.txt**: Added `ApaDoseDirection`, 17 missing methods (`triggerShock`, `factoryReset`, `setPhDirection`, `getPhDirection`, `setPoolVolume`, `getPoolVolume`, `setDeadbandPct`, `getDeadbandPct`, `enableAdaptivePB`, `isAdaptivePBEnabled`, `isShockActive`, `getShockRemainingSeconds`, `getAdaptedPB`, `setExternalStopCallback`, `isExternalStopActive`, `isInExternalStopResumeDelay`, `isOutsideDosingWindow`), and 8 missing constants (`DOSE_PH`, `PH_PLUS`, `PH_MINUS`, `CL_PLUS`, `SHOCK_ORP_MILD`, `SHOCK_ORP_STANDARD`, `SHOCK_ORP_AGGRESSIVE`, `MAX_MANUAL_DOSE_MS`). Removed stale `DOSE_PH_PLUS` and `DOSE_PH_MINUS` (never existed in current API).
+
+---
+
+## [3.10.0] — 2026-05-20
+
+### Added
+
+- **Pool volume scaling** (`ApaDose::setPoolVolume(m3)`) — scales pulse duration, rest period, feedback
+  pulse cap (`FEEDBACK_PULSE_MAX_MS`), and shock ORP rise window (`SHOCK_RISE_CHECK_MS`) proportionally
+  to pool size. Reference: 20 m³. Valid range: 10–90 m³; 0 = off (backward compatible default).
+
+  Without this, pools above ~30 m³ cannot converge to setpoint because every dose is too short relative
+  to the water volume. With it, the same controller works correctly from a 10 m³ spa to a 90 m³ pool.
+
+  ```cpp
+  ApaDose::setPoolVolume(35);  // 35 m³ — scale 1.75×; call once in setup()
+  ```
+
+  - Saved to a 3-byte global EEPROM slot (addresses 189–191), outside per-instance `ConfigData`
+  - **Survives `factoryReset()`** — pool size is a physical installation fact, not a tuning parameter
+  - Clear explicitly with `ApaDose::setPoolVolume(0)` if needed
+  - Affects: `calculateProportionalPulse()` (duration + rest), `applyFeedbackCorrections()` (cap), `manageShock()` (rise window)
+  - Does NOT affect: `INTER_PUMP_LOCKOUT_MS`, `blackoutMinutes`, `triggerManualDose()`, `triggerPrime()`, PWM intensity
+
+- **Dead-band** (`ApaDose::setDeadbandPct(pct)`) — suppresses proportional dosing when the sensor error
+  is within a configurable percentage of the proportional band. Reduces unnecessary pump cycles when the
+  pool is already close to setpoint.
+
+  Unit is **% of proportional band** — dimensionless and type-agnostic. 10% on a pH pump (PB = 1.0)
+  means ±0.10 pH; 10% on a chlorine pump (PB = 100 mV) means ±10 mV. The same number applies correctly
+  to both types.
+
+  ```cpp
+  ApaDose::setDeadbandPct(10);  // 10 % — call once in setup()
+  ```
+
+  **Asymmetric hysteresis** prevents oscillation when the sensor straddles the boundary:
+  - 0%: disabled (default)
+  - 1–5%: symmetric (entry = exit)
+  - 6–20%: exit threshold = entry − 5 percentage points; pump only resumes once error grows past the entry threshold again
+
+  - Saved to the same global EEPROM slot as pool volume (no extra EEPROM cost)
+  - **Cleared by `factoryReset()`** — dead-band is a tuning parameter; factory reset is the reliable escape hatch if dosing misbehaves after dead-band is set
+  - Gate is in `shouldStartDosing()` — prevents wasted before-dose sensor sampling when within dead-band
+
+### Fixed
+
+- **`millis()` 49-day rollover** — six absolute timestamp comparisons converted to the
+  rollover-safe signed-cast pattern `(long)(now - deadline) >= 0`. Affected paths:
+  post-shock cooldown check in `update()`, post-shock cooldown guard in `triggerShock()`,
+  and all three `FB_WAITING` / `FB_MEASURING_BEFORE` / `FB_MEASURING_AFTER` comparisons
+  in the feedback sampling state machine.
+
+- **SRAM reduction (−4 bytes per instance)** — `FeedbackState.feedbackCheckTime` field
+  removed. The FB_WAITING deadline is now stored directly in `nextSampleTime`, which is
+  structurally idle during that phase (both `FB_MEASURING_BEFORE` and `FB_MEASURING_AFTER`
+  phase guards prevent it from being read). `startAfterDosingMeasurements()` naturally
+  overwrites it when the after-measurement phase begins.
+
+---
+
 ## [3.9.0] — 2026-05-20
 
 ### Added
