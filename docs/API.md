@@ -918,7 +918,7 @@ enum ApaDoseAlarm {
   ALARM_INEFFECTIVE,      // no change after 3 dosing attempts
   ALARM_SAFETY_BAND,      // sensor beyond setpoint ± safety band
   ALARM_INVALID_PARAM,    // configuration value out of valid range
-  ALARM_DAILY_LIMIT,      // maximum daily dose count reached — requires human check
+  ALARM_DAILY_LIMIT,      // maximum daily dose count reached — auto-clears at midnight / 24 h
   ALARM_SENSOR_FAULT      // sensor reading out of range or NaN for >2 min, or no reading for >30 min
 };
 ```
@@ -931,7 +931,7 @@ enum ApaDoseAlarm {
 | `ALARM_INEFFECTIVE` | EMA delivery ratio drops below threshold (default 20%), 3 consecutive failed feedback cycles, or ORP did not rise during shock | Fix pump or supply → `acknowledgeAlarm()` |
 | `ALARM_SAFETY_BAND` | sensor beyond `min(band × 1.5, hardCap)` from setpoint | Automatic when sensor recovers |
 | `ALARM_INVALID_PARAM` | bad configuration value | Automatic rejection, no change applied |
-| `ALARM_DAILY_LIMIT` | `maxDailyDoses` reached | `acknowledgeAlarm()` |
+| `ALARM_DAILY_LIMIT` | `maxDailyDoses` reached | Automatic at midnight (RTC) or after 24 h (millis) |
 
 **`ALARM_WRONG_DIRECTION` on high-bather-load days:** On a heavily used pool, chlorine demand can exceed what each dose delivers — ORP may drop after dosing even though the correct chemical is present. The 3-consecutive-cycle threshold (with ~20-minute rest periods between each) gives roughly one hour of tolerance before the alarm fires, which covers most short demand spikes. If this alarm fires on a busy day:
 
