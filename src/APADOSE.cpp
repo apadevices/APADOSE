@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.12.0
+ * Version: 3.14.0
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -73,6 +73,9 @@ ApaDose::ApaDose(uint8_t pumpPin, uint16_t eepromAddress)
     eepromBaseAddress(eepromAddress),
     lastDoseSensorBefore(0.0f), lastDoseSensorAfter(0.0f),
     pumpFlowRateMlPerMin(450.0f), dailyVolumeMl(0.0f), lastDoseVolumeMl(0.0f),
+    _schedHour(0), _schedMinute(0), _schedDurationMs(0),
+    _schedThreshold(0.0f), _schedIntervalDays(1),
+    _schedDaysRemaining(0), _schedLastSeenDay(255),
     nudgePct(0), adaptedPB(0.0f),
     shockStartTime(0), postShockCooldownEnd(0),
     shockEffectiveStop(0), shockRiseTarget(0),
@@ -260,6 +263,7 @@ void ApaDose::update() {
   }
 
   manageFeedbackSampling();
+  manageScheduledDose();
   manageProportionalDosing();
 }
 
@@ -1126,6 +1130,49 @@ void ApaDose::stopShock(const __FlashStringHelper* msg) {
 uint32_t ApaDose::toApproxHours(ApaDoseTime t) {
   return (uint32_t)t.year * 8760UL + (uint32_t)t.month * 720UL +
          (uint32_t)t.day  * 24UL   + (uint32_t)t.hour;
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled dose (C-pred)
+// ---------------------------------------------------------------------------
+
+void ApaDose::setScheduledDose(uint8_t hour, uint8_t minute,
+                                unsigned long durationMs,
+                                uint8_t intervalDays,
+                                float   threshold) {
+  _schedHour          = hour;
+  _schedMinute        = minute;
+  _schedDurationMs    = durationMs;
+  _schedThreshold     = threshold;
+  _schedIntervalDays  = (intervalDays == 0) ? 1 : intervalDays;
+  _schedDaysRemaining = 0;
+  _schedLastSeenDay   = 255;
+}
+
+void ApaDose::manageScheduledDose() {
+  if (_schedDurationMs == 0)  return;
+  if (readRTCTime == nullptr) return;
+
+  ApaDoseTime t = readRTCTime();
+
+  // Day-tick: advance countdown once per calendar day
+  if (t.day != _schedLastSeenDay) {
+    if (_schedLastSeenDay != 255 && _schedDaysRemaining > 0)
+      _schedDaysRemaining--;
+    _schedLastSeenDay = t.day;
+  }
+
+  // Fire only when countdown reaches zero and the clock matches the configured time
+  if (_schedDaysRemaining == 0 &&
+      t.hour == _schedHour && t.minute == _schedMinute) {
+    bool condMet = (_schedThreshold == 0.0f) ||
+                   (readSensor != nullptr &&
+                    (dosesUp() ? sensorValue < _schedThreshold
+                               : sensorValue > _schedThreshold));
+    if (condMet && triggerManualDose(_schedDurationMs)) {
+      _schedDaysRemaining = _schedIntervalDays;
+    }
+  }
 }
 
 bool ApaDose::isShockActive() const {
