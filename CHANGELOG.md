@@ -5,6 +5,76 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.13.2] — 2026-05-22
+
+### Fixed
+
+- **`ALARM_DAILY_LIMIT` was incorrectly latching** — the alarm fired correctly when the
+  maximum daily dose count was reached, but it was marked as requiring manual ACK, so dosing
+  stayed blocked overnight even after the daily counter reset at midnight. The alarm now
+  auto-clears in both daily-reset paths (RTC midnight roll-over and 24 h millis fallback)
+  the same moment `dailyDoseCount` is zeroed. No API change, no EEPROM change.
+
+---
+
+## [3.13.1] — 2026-05-22
+
+### Fixed
+
+- **`library.properties` — Arduino Library Manager discoverability** — three fields corrected
+  so the Arduino Library Manager can index and surface new releases:
+  - `name` changed from `APA-Dose` to `APADOSE` — removes the hyphen that was inconsistent
+    with the library identifier used at registry registration
+  - `url` corrected from a Facebook URL to the actual GitHub repository URL
+    (`https://github.com/apadevices/APADOSE`) — Library Manager uses this field to locate
+    GitHub releases when checking for version updates; the wrong URL caused every release
+    after 3.8.3 to be invisible to the manager
+  - `category` changed from `Other` to `Device Control` — more accurate classification
+- **Version bumped to 3.13.1.** No code, API, or EEPROM change.
+
+---
+
+## [3.13.0] — 2026-05-22
+
+### Added
+
+- **Chemical tank empty sensor (`setTankEmptyCallback()`)** — optional callback-based hardware
+  input for a float switch, capacitive sensor, or any dry-contact signal that indicates the
+  chemical container is empty. Same pattern as `setExternalStopCallback()` — register before
+  `begin()`, one callback per pump instance.
+
+  ```cpp
+  bool phTankEmpty() { return digitalRead(PIN_TANK_SENSOR) == LOW; }
+  phPump.setTankEmptyCallback(phTankEmpty);  // call before begin()
+  ```
+
+  When the callback returns `true` at dose-start time:
+  - `ALARM_TANK_EMPTY` fires immediately (latching — requires `acknowledgeAlarm()`)
+  - Automatic and manual dosing are blocked
+  - `triggerPrime()` is also blocked — no point running a dry pump
+  - Checked at dose-start time only, not continuously — zero overhead during rest periods
+
+  After the user refills and presses ACK, dosing resumes normally. If the tank is still empty,
+  the alarm fires again on the next dose attempt.
+
+- **`ALARM_TANK_EMPTY`** — new alarm enum value. Appears in `getCurrentAlarm()`,
+  `getAlarmMessage()` (returns `"Tank empty!"`), `onAlarmTriggered` callback, and
+  `getAlarmName()`. Like `ALARM_WRONG_DIRECTION`, `ALARM_INEFFECTIVE`, and
+  `ALARM_DAILY_LIMIT`, it requires `acknowledgeAlarm()` to clear.
+
+### Behaviour notes
+
+- `setTankEmptyCallback()` costs 1 function pointer per instance (2 bytes AVR / 4 bytes
+  ESP32/STM32). No SRAM overhead when unused (callback is `nullptr` by default).
+- The callback is only invoked when the library is actually about to start a new dose cycle —
+  not in the middle of a rest period, not while an alarm is already active, and not at boot.
+- **Option E finding:** `wrongDirectionCount` already resets on any non-significantly-wrong-direction
+  move (the `else` branch in `evaluateFeedback()` was already decoupled from the `effective`
+  check in earlier refactoring). No code change was needed — the alarm is already tolerant of
+  high-demand days where ORP drops slightly between correct doses.
+
+---
+
 ## [3.12.0] — 2026-05-21
 
 ### Added
@@ -38,6 +108,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   EMA ratio (0–100 %) instead of a signed proportional-band proxy.
 
 - **`APA_DOSE_VERSION_MINOR`** corrected: was `10` (copy error from 3.10.x), now `12`.
+
+### Documentation and examples
+
+- **`examples/calibration/01_flow_rate_calibration/`** — new utility sketch for measuring pump
+  flow rate (mL/min). Fill the container with 500 mL of actual chemical, type `run` to start
+  the pump at full speed, type `stop` when the container empties. Calculates mL/min from
+  elapsed time and prints the exact `setPumpFlowRate()` line to copy. Uses real chemical
+  (not water) for accurate viscosity-matched results.
 
 ### Behaviour notes
 
