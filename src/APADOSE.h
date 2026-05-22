@@ -11,7 +11,7 @@
  * - EEPROM persistent storage
  * - Hardware-agnostic callback interface
  *
- * Version: 3.12.0
+ * Version: 3.13.1
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.12.0"
+#define APA_DOSE_VERSION "3.13.2"
 #define APA_DOSE_VERSION_MAJOR 3
-#define APA_DOSE_VERSION_MINOR 12
-#define APA_DOSE_VERSION_PATCH 0
+#define APA_DOSE_VERSION_MINOR 13
+#define APA_DOSE_VERSION_PATCH 2
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -167,8 +167,9 @@ enum ApaDoseAlarm {
   ALARM_INEFFECTIVE,      // sensor value did not change after multiple attempts (pump/supply issue)
   ALARM_SAFETY_BAND,      // sensor value drifted beyond safety limits
   ALARM_INVALID_PARAM,    // Configuration value rejected (out of allowed range)
-  ALARM_DAILY_LIMIT,      // maximum daily dose count reached — requires human check
-  ALARM_SENSOR_FAULT      // Sensor reading invalid (out of range / NaN) for >2 min, or no reading for >30 min
+  ALARM_DAILY_LIMIT,      // maximum daily dose count reached — auto-clears at midnight / 24 h
+  ALARM_SENSOR_FAULT,     // Sensor reading invalid (out of range / NaN) for >2 min, or no reading for >30 min
+  ALARM_TANK_EMPTY        // chemical tank empty — requires refill and acknowledgeAlarm()
 };
 
 // --- Internal structures ---
@@ -240,6 +241,7 @@ typedef void       (*StatusCallback)(const char* message);
 typedef float      (*SensorReadCallback)();    // Return current sensor value (pH or ORP mV)
 typedef bool       (*FilterCallback)();        // Return true if filtration pump is running
 typedef bool       (*ExternalStopCallback)();  // Return true to block all dosing (except priming)
+typedef bool       (*TankEmptyCallback)();     // Return true when chemical tank is empty
 typedef ApaDoseTime (*RTCReadCallback)();       // Return current date/time from external RTC
 
 // --- Main class ---
@@ -301,6 +303,7 @@ private:
   SensorReadCallback   readSensor;
   FilterCallback       filterPumpRunning;
   ExternalStopCallback externalStop;
+  TankEmptyCallback    tankEmpty;
   RTCReadCallback      readRTCTime;
 
   // pH-first priority (J) and cross-settle coupling (A) — per-instance, setup-time only
@@ -413,6 +416,7 @@ public:
   void setRTCCallback(RTCReadCallback rtcReader);                                  // Connect external RTC (call before begin)
   void setDosingWindow(uint8_t startHour, uint8_t endHour);                       // Restrict dosing to hour range 0-23 (call before begin)
   void setExternalStopCallback(ExternalStopCallback cb);                           // Optional: block all dosing (except priming) when cb returns true
+  void setTankEmptyCallback(TankEmptyCallback cb);                                  // Optional: fire ALARM_TANK_EMPTY (latching) when cb returns true; also blocks priming
   // pH-first priority (J) + cross-settle coupling (A) — call AFTER both pump begin() calls.
   // setPhPump: registers the pH peer; activates J (fixed threshold CL_PH_MAX) automatically.
   // setCrossSettleMinutes: also activates A — CL held N min after each pH dose; 0 = off.

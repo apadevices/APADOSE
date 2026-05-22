@@ -64,7 +64,7 @@ ApaDose::ApaDose(uint8_t pumpPin, uint16_t eepromAddress)
     filterOffStart(0), externalStopClearedAt(0),
     sensorValue(PH_SETPOINT_DEFAULT),
     onAlarmTriggered(nullptr), onAlarmCleared(nullptr), onStatusMessage(nullptr),
-    readSensor(nullptr), filterPumpRunning(nullptr), externalStop(nullptr), readRTCTime(nullptr),
+    readSensor(nullptr), filterPumpRunning(nullptr), externalStop(nullptr), tankEmpty(nullptr), readRTCTime(nullptr),
     startupBlackoutMinutes(0), startupTime(0),
     dosingWindowStart(0), dosingWindowEnd(0),
     lastKnownDay(255), dailyDoseCount(0), maxDailyDoses(0),
@@ -202,6 +202,10 @@ void ApaDose::setDosingWindow(uint8_t startHour, uint8_t endHour) {
 
 void ApaDose::setExternalStopCallback(ExternalStopCallback cb) {
   externalStop = cb;
+}
+
+void ApaDose::setTankEmptyCallback(TankEmptyCallback cb) {
+  tankEmpty = cb;
 }
 
 void ApaDose::setPumpRange(uint8_t minPWM, uint8_t maxPWM) {
@@ -419,6 +423,7 @@ void ApaDose::manageProportionalDosing() {
       dailyVolumeMl  = 0.0f;
       lastKnownDay   = t.day;
       lastDailyReset = millis();
+      if (alarm.currentAlarm == ALARM_DAILY_LIMIT) clearAlarm();
     }
     flags.outsideDosingWindow = flags.dosingWindowEnabled &&
                                 (t.hour < dosingWindowStart || t.hour >= dosingWindowEnd);
@@ -428,6 +433,7 @@ void ApaDose::manageProportionalDosing() {
       dailyDoseCount = 0;
       dailyVolumeMl  = 0.0f;
       lastDailyReset = millis();
+      if (alarm.currentAlarm == ALARM_DAILY_LIMIT) clearAlarm();
     }
   }
 
@@ -445,6 +451,14 @@ void ApaDose::manageProportionalDosing() {
 
   checkSafetyConditions();
   if (flags.alarmActive) return;
+
+  if (tankEmpty != nullptr && tankEmpty()) {
+    char buf[20];
+    FSTR_TO_BUF(buf, F("Tank empty!"), 19);
+    buf[19] = '\0';
+    triggerAlarm(ALARM_TANK_EMPTY, buf);
+    return;
+  }
 
   if (maxDailyDoses > 0 && dailyDoseCount >= maxDailyDoses) {
     char msg[20];
@@ -836,7 +850,7 @@ void ApaDose::triggerAlarm(ApaDoseAlarm type, const char* message) {
   alarm.alarmMessage[sizeof(alarm.alarmMessage) - 1] = '\0';
   flags.alarmNeedsAck = (type == ALARM_WRONG_DIRECTION ||
                          type == ALARM_INEFFECTIVE    ||
-                         type == ALARM_DAILY_LIMIT);
+                         type == ALARM_TANK_EMPTY);
 
   feedback.failedAttempts = 0;
   feedback.phase          = FB_IDLE;
@@ -883,6 +897,7 @@ const char* ApaDose::getAlarmName(ApaDoseAlarm type) {
     case ALARM_INVALID_PARAM:   return "Invalid param";
     case ALARM_DAILY_LIMIT:     return "Daily limit";
     case ALARM_SENSOR_FAULT:    return "Sensor fault";
+    case ALARM_TANK_EMPTY:      return "Tank empty";
     default:                    return "Unknown";
   }
 }
@@ -1157,6 +1172,7 @@ bool ApaDose::triggerManualDose(unsigned long durationMs, unsigned long restMs) 
 bool ApaDose::triggerPrime(unsigned long durationMs, uint8_t pwm) {
   if (flags.dosingActive || flags.primingActive) return false;
   if (durationMs == 0) return false;
+  if (flags.alarmActive && alarm.currentAlarm == ALARM_TANK_EMPTY) return false;
 
   uint8_t primePWM    = (pwm == 0) ? pumpMaxPWM
                                    : (uint8_t)constrain(pwm, pumpMinPWM, pumpMaxPWM);
