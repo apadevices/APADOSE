@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.13.3] — 2026-05-22
+
+### Fixed
+
+- **`library.properties` — library name corrected back to `APA-Dose`** — the 3.13.1 fix
+  changed the name from `APA-Dose` to `APADOSE` believing the hyphen caused Library Manager
+  indexing failures. The root cause was the wrong URL, not the name. The Library Manager
+  rejected 3.13.2 because the registered library identity is `APA-Dose`. Name reverted;
+  URL, category, and all other 3.13.1 fixes remain in place. No code, API, or EEPROM change.
+
+---
+
 ## [3.13.2] — 2026-05-22
 
 ### Fixed

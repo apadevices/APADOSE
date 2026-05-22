@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="extras/apadose-banner.png" alt="APADOSE" width="600">
+  <img src="extras/apadose-banner.png" alt="APADOSE" width="400">
 </p>
 
 # APA-Dose Library
@@ -7,7 +7,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.13.2** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.13.3** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
@@ -28,6 +28,7 @@ Part of the **APA Devices** product family.
 - **Full alarm system** — wrong direction, ineffective dose, safety band, daily dose limit, sensor fault (`ALARM_SENSOR_FAULT`) — all built-in and reported via callback or polling
 - **Filtration interlock** — dosing blocked the instant the filter stops; a running dose halts immediately; no chemical ever injected into stagnant water
 - **External stop** — optional callback from any external system (maintenance mode, backwash, cover) blocks all dosing immediately; a mandatory 5-minute settling time applies after the signal clears before dosing resumes
+- **Chemical tank empty sensor** — optional dry-contact callback (`setTankEmptyCallback()`) fires `ALARM_TANK_EMPTY` the instant the tank runs dry; blocks dosing and priming until the tank is refilled and acknowledged; zero SRAM cost if unused
 - **Setpoint range enforcement** — pH 6.8 – 7.8 and ORP 400 – 850 mV enforced on every write; out-of-range values rejected before reaching EEPROM
 - **Inter-pump chemical lockout** — 90-second enforced gap after any pump instance doses; prevents incompatible chemicals meeting at the same pipe inlet
 - **Startup blackout** — optional N-minute dosing hold after power-on (`blackoutMinutes` parameter in `begin()`); gives electrochemical sensors time to stabilize before the first dose decision; `isInStartupBlackout()` exposes the state for display
@@ -152,27 +153,27 @@ threshold    25 %      50 %      75 %                   100 %
 Every automatic dose passes through six phases:
 
 ```
-  ┌──────────────────────────────────────────────────────────┐
-  │                                                          │
-  │  ① SAMPLE BEFORE     2 readings × 30 s apart             │
-  │        │             averaged → before-dose value        │
-  │        ▼                                                 │
-  │  ② CALCULATE PULSE                                       │
-  │        │   error %  =  |setpoint − reading| / band       │
-  │        │   PWM      ∝  error %   (proportional)          │
-  │        │   time     ∝  error %   (2 – 11 s)              │
-  │        │   rest     ∝  error %   (5 – 20 min)            │
-  │        ▼                                                 │
-  │  ③ RUN PUMP          analogWrite(PWM) for pulse time     │
-  │        │                                                 │
-  │        ▼                                                 │
-  │  ④ REST              chemical mixes into pool water      │
-  │        │             (5 – 20 min, proportional to dose)  │
-  │        ▼                                                 │
-  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart             │
-  │        │             averaged → after-dose value         │
-  │        ▼                                                 │
-  │  ⑥ EVALUATE FEEDBACK                                     │
+  ┌─────────────────────────────────────────────────────────┐
+  │                                                         │
+  │  ① SAMPLE BEFORE     2 readings × 30 s apart           │
+  │        │             averaged → before-dose value       │
+  │        ▼                                               │
+  │  ② CALCULATE PULSE                                      │
+  │        │   error %  =  |setpoint − reading| / band      │
+  │        │   PWM      ∝  error %   (proportional)         │
+  │        │   time     ∝  error %   (2 – 11 s)             │
+  │        │   rest     ∝  error %   (5 – 20 min)           │
+  │        ▼                                               │
+  │  ③ RUN PUMP          analogWrite(PWM) for pulse time    │
+  │        │                                               │
+  │        ▼                                               │
+  │  ④ REST              chemical mixes into pool water     │
+  │        │             (5 – 20 min, proportional to dose) │
+  │        ▼                                               │
+  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart           │
+  │        │             averaged → after-dose value        │
+  │        ▼                                               │
+  │  ⑥ EVALUATE FEEDBACK                                    │
   │        │  update EMA delivery baseline                   │
   │        ├─ EMA ratio < threshold? (default 20 %)          │
   │        │       └──────────────► ALARM_INEFFECTIVE        │
@@ -181,7 +182,7 @@ Every automatic dose passes through six phases:
   │        │     yes ──► failedAttempts=0; adaptive PB nudge │
   │        └─     no  ──► failedAttempts++; boost next dose  │
   │                       alarm after 3 (ALARM_INEFFECTIVE)  │
-  └────────────────────────┬─────────────────────────────────┘
+  └────────────────────────┬────────────────────────────────┘
                            │ repeat
                            ▼
 ```
