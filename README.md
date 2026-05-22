@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="extras/apadose-banner.png" alt="APADOSE" width="400">
+  <img src="extras/apadose-banner.png" alt="APADOSE" width="600">
 </p>
 
 # APA-Dose Library
