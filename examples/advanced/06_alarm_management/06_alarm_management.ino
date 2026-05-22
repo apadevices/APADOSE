@@ -26,7 +26,9 @@
  *                                failure after 1–3 bad doses. getDoseEffectiveness() shows the ratio.
  *                              • 3-strike path: sensor shows no meaningful response on 3 consecutive
  *                                doses — cold-start safety net before baseline is established.
- *   ALARM_DAILY_LIMIT      — requires ACK button
+ *   ALARM_DAILY_LIMIT      — auto-clears at midnight (RTC) or after 24 h (millis fallback)
+ *   ALARM_TANK_EMPTY       — requires ACK button; fires when setTankEmptyCallback() returns true
+ *                              at dose-start time; dosing AND priming blocked until resolved
  *   ALARM_SAFETY_BAND      — auto-clears when sensor returns to safe range
  *   ALARM_INVALID_PARAM    — never latches; silent rejection only
  *
@@ -34,6 +36,8 @@
  *   PIN_PH_PUMP       D9
  *   PIN_CL_PUMP       D10
  *   PIN_FILTER_RELAY  D2
+ *   PIN_PH_TANK       D5    Float switch: acid tank (INPUT_PULLUP, LOW = empty)
+ *   PIN_CL_TANK       D6    Float switch: chlorine tank (INPUT_PULLUP, LOW = empty)
  *   PIN_ALARM_LED     D13   on while any alarm is active
  *   PIN_BUZZER        D8    active-high buzzer
  *   PIN_ACK_BUTTON    D3    INPUT_PULLUP, active LOW
@@ -48,6 +52,8 @@
 const uint8_t  PIN_PH_PUMP       = 9;
 const uint8_t  PIN_CL_PUMP       = 10;
 const uint8_t  PIN_FILTER_RELAY  = 2;
+const uint8_t  PIN_PH_TANK       = 5;
+const uint8_t  PIN_CL_TANK       = 6;
 const uint8_t  PIN_ALARM_LED     = 13;
 const uint8_t  PIN_BUZZER        = 8;
 const uint8_t  PIN_ACK_BUTTON    = 3;
@@ -62,12 +68,14 @@ ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EE
 float getpH()         { return 7.2; /* replace */ }
 float getORP()        { return 640; /* replace */ }
 bool  filterRunning() { return digitalRead(PIN_FILTER_RELAY) == HIGH; }
+bool  phTankEmpty()   { return digitalRead(PIN_PH_TANK) == LOW; }
+bool  clTankEmpty()   { return digitalRead(PIN_CL_TANK) == LOW; }
 
 // Returns true for alarms that latch until the user presses ACK.
 bool requiresAck(ApaDoseAlarm type) {
   return type == ALARM_WRONG_DIRECTION ||
          type == ALARM_INEFFECTIVE     ||
-         type == ALARM_DAILY_LIMIT;
+         type == ALARM_TANK_EMPTY;
 }
 
 void logAlarm(const char* pumpName, ApaDoseAlarm type, const char* msg) {
@@ -205,6 +213,8 @@ void setup() {
   pinMode(PIN_BUZZER,       OUTPUT);
   pinMode(PIN_ACK_BUTTON,   INPUT_PULLUP);
   pinMode(PIN_FILTER_RELAY, INPUT);
+  pinMode(PIN_PH_TANK,      INPUT_PULLUP);
+  pinMode(PIN_CL_TANK,      INPUT_PULLUP);
   digitalWrite(PIN_ALARM_LED, LOW);
   digitalWrite(PIN_BUZZER,    LOW);
 
@@ -212,12 +222,14 @@ void setup() {
   phPump.setPumpRange(65, 255);        // 65 = PWM start threshold — measure for YOUR pump
   // phPump.setPumpFlowRate(450.0);    // optional: measured mL/min at max PWM — enables getDailyVolumeMl()
   phPump.setCallbacks(onPhAlarm, onPhAlarmCleared, onStatus);
+  phPump.setTankEmptyCallback(phTankEmpty);
   // PH_MINUS = acid (lowers pH); use PH_PLUS for a base pump (raises pH)
   phPump.begin(getpH, filterRunning, DOSE_PH, PH_MINUS, 20, 6);
 
   clPump.setPumpRange(65, 255);        // measure start threshold for this pump separately
   // clPump.setPumpFlowRate(450.0);    // optional: measured mL/min at max PWM — enables getDailyVolumeMl()
   clPump.setCallbacks(onClAlarm, onClAlarmCleared, onStatus);
+  clPump.setTankEmptyCallback(clTankEmpty);
   clPump.begin(getORP, filterRunning, DOSE_CL, CL_PLUS, 20, 12);
 
   // --- Pool size scaling (call AFTER begin) ---
