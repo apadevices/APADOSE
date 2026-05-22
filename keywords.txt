@@ -26,6 +26,7 @@ setExternalStopCallback	KEYWORD2
 setTankEmptyCallback	KEYWORD2
 setCallbacks	KEYWORD2
 triggerManualDose	KEYWORD2
+setScheduledDose	KEYWORD2
 triggerPrime	KEYWORD2
 triggerShock	KEYWORD2
 setProbeSetpoint	KEYWORD2
