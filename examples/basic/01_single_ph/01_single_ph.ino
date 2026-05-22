@@ -5,6 +5,7 @@
  * Demonstrates the minimum recommended wiring for a production install:
  *   - Filtration interlock (no dosing without circulation)
  *   - 20-minute startup blackout (prevents double-dose after power cycle)
+ *   - Tank empty sensor (ALARM_TANK_EMPTY — latching, blocks dosing and priming)
  *   - Alarm LED driven by continuous polling
  *   - ACK button for latching alarms
  *   - All callbacks registered BEFORE begin()
@@ -12,6 +13,9 @@
  * Hardware:
  *   PIN_PH_PUMP       D9    MOSFET gate → peristaltic pump
  *   PIN_FILTER_RELAY  D2    Filter running signal (HIGH = running)
+ *   PIN_TANK_SENSOR   D4    Float switch: GND one leg, D4 the other (INPUT_PULLUP)
+ *                           Float up (tank full)  → switch open  → pin HIGH
+ *                           Float down (tank empty) → switch closed → pin LOW
  *   PIN_ALARM_LED     D13   Alarm indicator LED
  *   PIN_ACK_BUTTON    D3    Momentary button, normally open (INPUT_PULLUP)
  *
@@ -24,6 +28,7 @@
 
 const uint8_t PIN_PH_PUMP      = 9;
 const uint8_t PIN_FILTER_RELAY = 2;
+const uint8_t PIN_TANK_SENSOR  = 4;
 const uint8_t PIN_ALARM_LED    = 13;
 const uint8_t PIN_ACK_BUTTON   = 3;
 
@@ -38,9 +43,11 @@ float getpH() {
 // If the filter stays off for more than FILTER_OFF_ALARM_MS (30 min), a
 // status message fires once via onStatus. Dosing resumes automatically when
 // the filter turns back on. No manual intervention needed.
-bool filterRunning() {
-  return digitalRead(PIN_FILTER_RELAY) == HIGH;
-}
+bool filterRunning() { return digitalRead(PIN_FILTER_RELAY) == HIGH; }
+
+// Float up (tank full) → switch open → pin HIGH → returns false.
+// Float down (tank empty) → switch closed → pin LOW → returns true → ALARM_TANK_EMPTY.
+bool tankEmpty() { return digitalRead(PIN_TANK_SENSOR) == LOW; }
 
 // --- Callbacks ---
 // onAlarmTriggered fires once the moment the alarm is raised.
@@ -67,6 +74,7 @@ void setup() {
   pinMode(PIN_ALARM_LED,    OUTPUT);
   pinMode(PIN_ACK_BUTTON,   INPUT_PULLUP);
   pinMode(PIN_FILTER_RELAY, INPUT);
+  pinMode(PIN_TANK_SENSOR,  INPUT_PULLUP);
 
   phPump.setPumpRange(65, 255);  // 65 = PWM where YOUR pump starts spinning — measure it
   // Solenoid valve: use setPumpRange(255, 255) — PWM is fixed at 255 (fully open),
@@ -74,6 +82,7 @@ void setup() {
 
   // Register callbacks BEFORE begin() so startup messages are not missed
   phPump.setCallbacks(onAlarm, onAlarmCleared, onStatus);
+  phPump.setTankEmptyCallback(tankEmpty);
 
   // Sensor + filter + type + direction + 20 min blackout + max 6 doses/day
   // PH_MINUS = acid pump (lowers pH); use PH_PLUS for a base pump (raises pH).
@@ -101,7 +110,8 @@ void loop() {
   // Polling guarantees the LED stays in sync even if the callback was missed.
   digitalWrite(PIN_ALARM_LED, phPump.isAlarmActive() ? HIGH : LOW);
 
-  // ACK button clears latching alarms: WRONG_DIRECTION, INEFFECTIVE, DAILY_LIMIT.
+  // ACK button clears latching alarms: WRONG_DIRECTION, INEFFECTIVE, TANK_EMPTY.
+  // ALARM_DAILY_LIMIT auto-clears at midnight when the daily counter resets — no ACK needed.
   // ALARM_INEFFECTIVE can fire two ways: sensor showed no meaningful response on 3
   // consecutive doses (cold-start), or the last dose fell below the EMA delivery
   // baseline (default 20% threshold — see setEfficiencyThreshold() in setup above).
