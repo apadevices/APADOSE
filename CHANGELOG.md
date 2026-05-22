@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.14.0] — 2026-05-22
+
+### Added
+
+- **`setScheduledDose()` — RTC-based scheduled pre-dosing** — fires a fixed-duration manual
+  dose at a configurable time of day, with optional interval and threshold controls.
+  Requires an RTC callback registered via `setRTCCallback()`. All standard safety guards
+  (filtration interlock, external stop, tank-empty check, daily dose limit, inter-pump
+  lockout, active alarm block) are inherited automatically because the scheduled dose calls
+  `triggerManualDose()` internally.
+  - `hour` / `minute` — wall-clock time at which the dose fires
+  - `durationMs` — pulse length in milliseconds (same as `triggerManualDose()`)
+  - `intervalDays` (optional, default 1) — every N days; use `7` for weekly
+  - `threshold` (optional, default 0.0) — if non-zero, dose is skipped when the sensor
+    already reads in the safe direction (e.g. pH already low enough, ORP already high
+    enough); ignored for sensor-less pumps (algaecide, flocculant)
+  - Works for all pump types: pH, ORP, algaecide, flocculant — ideal for regular
+    treatment chemicals that do not have a sensor to react to
+  - SRAM cost: 13 bytes per instance; no EEPROM usage
+
+---
+
 ## [3.13.3] — 2026-05-22
 
 ### Fixed
