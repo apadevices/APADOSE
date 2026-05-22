@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.13.3"
+#define APA_DOSE_VERSION "3.14.0"
 #define APA_DOSE_VERSION_MAJOR 3
-#define APA_DOSE_VERSION_MINOR 13
-#define APA_DOSE_VERSION_PATCH 3
+#define APA_DOSE_VERSION_MINOR 14
+#define APA_DOSE_VERSION_PATCH 0
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -342,6 +342,15 @@ private:
   float dailyVolumeMl;         // accumulated volume today (resets at midnight with RTC)
   float lastDoseVolumeMl;      // volume of the last completed dose
 
+  // Scheduled pre-dose (C-pred) — requires RTC; inert when _schedDurationMs == 0
+  uint8_t       _schedHour;          // 0-23
+  uint8_t       _schedMinute;        // 0-59
+  unsigned long _schedDurationMs;    // 0 = not configured
+  float         _schedThreshold;     // 0.0 = no condition; non-zero = sensor boundary
+  uint8_t       _schedIntervalDays;  // 1 = daily, 7 = weekly, etc.
+  uint8_t       _schedDaysRemaining; // countdown; 0 = fire at next scheduled time
+  uint8_t       _schedLastSeenDay;   // day-of-month when last evaluated (255 = never)
+
   // Adaptive proportional band
   uint8_t nudgePct;   // 0 = disabled; 1–25 = nudge rate per cycle
   float   adaptedPB;  // current learned PB; seeded from proportionalBand on first enable
@@ -377,6 +386,7 @@ private:
   void         readSensors();
   void         manageProportionalDosing();
   void         manageFeedbackSampling();
+  void         manageScheduledDose();
   bool         collectSample(unsigned long now, char prefix);
   bool         shouldStartDosing();
   DosingPulse  calculateProportionalPulse();
@@ -447,6 +457,19 @@ public:
   bool triggerManualDose(unsigned long durationMs,
                          unsigned long restMs = 20UL * 60UL * 1000UL);
   bool triggerPrime(unsigned long durationMs, uint8_t pwm = 0);  // 0 = use pumpMaxPWM; bypasses all safety guards
+
+  // Scheduled pre-dose — requires RTC callback; inert without one. Call before or after begin().
+  // Fires once per intervalDays at the given hour:minute, subject to all triggerManualDose() guards.
+  // threshold: only fire if sensorValue is on the wrong side of this value (0.0 = always fire).
+  //   Lowering pumps (PH_MINUS): fires when sensorValue > threshold.
+  //   Raising pumps (PH_PLUS / CL_PLUS): fires when sensorValue < threshold.
+  //   Sensor-less pumps (algaecide, flocculant): always use threshold = 0.0 (default).
+  // intervalDays: 1 = daily (default), 2 = every 2 days, 7 = weekly, etc.
+  // Pass durationMs = 0 to disable.
+  void setScheduledDose(uint8_t hour, uint8_t minute,
+                        unsigned long durationMs,
+                        uint8_t intervalDays = 1,
+                        float   threshold    = 0.0f);
 
   // Shock / super-chlorination — DOSE_CL instances only; filter callback required
   // Hobbyist: pass SHOCK_ORP_STANDARD (or SHOCK_ORP_MILD / SHOCK_ORP_AGGRESSIVE) and current pH.
