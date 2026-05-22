@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="extras/apadose-banner.png" alt="APADOSE" width="600">
+  <img src="extras/apadose-banner.png" alt="APADOSE" width="400">
 </p>
 
 # APA-Dose Library
@@ -7,7 +7,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.13.3** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.14.0** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
@@ -38,6 +38,7 @@ Part of the **APA Devices** product family.
 - **Sensor-less pump support** — pass `nullptr` as the sensor callback for flocculant or algaecide pumps; filtration interlock, daily limit, and priming all remain active
 - **Solenoid valve support** — set `min == max` in `setPumpRange()` for time-proportional on/off control; no other code changes needed
 - **Manual dosing** — `triggerManualDose()` for button or RTC-triggered doses; duration clamped to 5 minutes regardless of what is passed; all safety guards apply
+- **Scheduled dosing** — `setScheduledDose()` arms a recurring dose at a configurable wall-clock time; optional interval (daily/weekly/fortnightly) and sensor threshold to skip when reading is already in range; all safety guards apply; requires RTC
 - **Pipe priming** — `triggerPrime()` fills dry pipes on installation or after a container swap; bypasses all safety guards so it works even under an active alarm — except `ALARM_TANK_EMPTY` (no point running a dry pump); no rest period is imposed after priming — consecutive primes are allowed immediately (useful for long pipe runs requiring multiple passes)
 - **Shock / super-chlorination** — `triggerShock()` doses chlorine at full power until ORP reaches a target or a time ceiling; automatic early-stop margin, ORP rise check, inter-pump interlock, and post-shock safety band suppression all built-in; hobbyist and pro overloads available
 - **Dosing window** — restrict automatic dosing to a configurable daily hour range via `setDosingWindow()`; manual doses and priming are unaffected
@@ -153,27 +154,27 @@ threshold    25 %      50 %      75 %                   100 %
 Every automatic dose passes through six phases:
 
 ```
-  ┌──────────────────────────────────────────────────────────┐
-  │                                                          │
-  │  ① SAMPLE BEFORE     2 readings × 30 s apart             │
-  │        │             averaged → before-dose value        │
-  │        ▼                                                 │
-  │  ② CALCULATE PULSE                                       │
-  │        │   error %  =  |setpoint − reading| / band       │
-  │        │   PWM      ∝  error %   (proportional)          │
-  │        │   time     ∝  error %   (2 – 11 s)              │
-  │        │   rest     ∝  error %   (5 – 20 min)            │
-  │        ▼                                                 │
-  │  ③ RUN PUMP          analogWrite(PWM) for pulse time     │
-  │        │                                                 │
-  │        ▼                                                 │
-  │  ④ REST              chemical mixes into pool water      │
-  │        │             (5 – 20 min, proportional to dose)  │
-  │        ▼                                                 │
-  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart             │
-  │        │             averaged → after-dose value         │
-  │        ▼                                                 │
-  │  ⑥ EVALUATE FEEDBACK                                     │
+  ┌─────────────────────────────────────────────────────────┐
+  │                                                         │
+  │  ① SAMPLE BEFORE     2 readings × 30 s apart           │
+  │        │             averaged → before-dose value       │
+  │        ▼                                               │
+  │  ② CALCULATE PULSE                                      │
+  │        │   error %  =  |setpoint − reading| / band      │
+  │        │   PWM      ∝  error %   (proportional)         │
+  │        │   time     ∝  error %   (2 – 11 s)             │
+  │        │   rest     ∝  error %   (5 – 20 min)           │
+  │        ▼                                               │
+  │  ③ RUN PUMP          analogWrite(PWM) for pulse time    │
+  │        │                                               │
+  │        ▼                                               │
+  │  ④ REST              chemical mixes into pool water     │
+  │        │             (5 – 20 min, proportional to dose) │
+  │        ▼                                               │
+  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart           │
+  │        │             averaged → after-dose value        │
+  │        ▼                                               │
+  │  ⑥ EVALUATE FEEDBACK                                    │
   │        │  update EMA delivery baseline                   │
   │        ├─ EMA ratio < threshold? (default 20 %)          │
   │        │       └──────────────► ALARM_INEFFECTIVE        │
@@ -182,7 +183,7 @@ Every automatic dose passes through six phases:
   │        │     yes ──► failedAttempts=0; adaptive PB nudge │
   │        └─     no  ──► failedAttempts++; boost next dose  │
   │                       alarm after 3 (ALARM_INEFFECTIVE)  │
-  └────────────────────────┬─────────────────────────────────┘
+  └────────────────────────┬────────────────────────────────┘
                            │ repeat
                            ▼
 ```
@@ -422,6 +423,32 @@ if (t.weekday == 1 && t.hour == 8 && !weeklyFlocDone) {
 
 `triggerManualDose()` returns `false` and does nothing when: a dose or prime is already running, an alarm is active, the filter is off (when a `FilterCallback` is provided), the external stop callback returns `true` or its 5-minute resume delay is still active, the daily dose limit is reached, or the 90-second inter-pump lockout is still in effect.
 
+### Scheduled dosing — `setScheduledDose()`
+
+`setScheduledDose(hour, minute, durationMs)` arms a dose that fires automatically at the configured wall-clock time — no tracking code in `loop()` required. An RTC callback must be registered via `setRTCCallback()` for the schedule to work.
+
+```cpp
+// Algaecide every day at 09:00 for 30 s
+algiPump.setScheduledDose(9, 0, 30UL * 1000UL);
+
+// Flocculant every 7 days at 08:30 for 60 s
+flocPump.setScheduledDose(8, 30, 60UL * 1000UL, 7);
+
+// pH acid daily at 07:00 — skip if pH already ≤ 7.4 (sensor already in range)
+phPump.setScheduledDose(7, 0, 10UL * 1000UL, 1, 7.4f);
+```
+
+Optional parameters:
+
+| # | Name | Default | Effect |
+|---|------|---------|--------|
+| 4 | `intervalDays` | `1` | Repeat every N days. `7` = weekly, `14` = fortnightly. |
+| 5 | `threshold` | `0.0` | Skip dose if sensor is already in the safe direction. `0.0` = always dose regardless of reading. Ignored for sensor-less pumps. |
+
+The threshold direction is resolved automatically: for a `PH_MINUS` pump, `7.4` means "skip if pH ≤ 7.4"; for a `PH_PLUS` or `DOSE_CL` pump, `7.4` means "skip if pH ≥ 7.4". No direction parameter needed.
+
+All standard safety guards apply — filtration interlock, external stop, tank-empty check, daily dose limit, inter-pump lockout, and active alarm block all prevent the dose from firing, exactly as for `triggerManualDose()`. The scheduled dose is most useful for sensor-less pumps (algaecide, flocculant) where proportional control does not apply.
+
 ### Priming — filling dry pipes
 
 `triggerPrime(durationMs, pwm)` runs the pump for exactly `durationMs` milliseconds to fill a dry pipe after first installation or a chemical container swap. `pwm` is optional — pass 0 (default) to use `pumpMaxPWM`, or any value between `pumpMinPWM` and `pumpMaxPWM` for a slower fill.
@@ -558,7 +585,11 @@ Remember to comment it back out before releasing production firmware — the def
 
 `setPumpRange(minPWM, maxPWM)` with `min < max` — both PWM speed and pulse duration scale with error. This is the primary use case.
 
-> **Finding your pump's minimum PWM:** Run **`examples/calibration/00_pump_calibration/`** before writing your main sketch. It is an interactive Serial utility: type a PWM value, the pump runs for 3 seconds, repeat until the shaft turns — then type `done` and it prints the exact `setPumpRange()` line to copy. Run it once per pump; the threshold is specific to each motor and supply voltage.
+> **Peristaltic pump calibration — two steps:**
+>
+> **Step 1 — PWM start threshold** (required): Run **`examples/calibration/00_pump_calibration/`** before writing your main sketch. It is an interactive Serial utility: type a PWM value, the pump runs for 3 seconds, repeat until the shaft turns — then type `done` and it prints the exact `setPumpRange()` line to copy. Run it once per pump; the threshold is specific to each motor and supply voltage.
+>
+> **Step 2 — Flow rate** (optional, for volume tracking): Run **`examples/calibration/01_flow_rate_calibration/`** to measure your pump's output at max PWM in mL/min. Fill the container with 500 mL of the actual chemical, type `run` — the pump starts. Type `stop` when the container empties. The sketch prints the exact `setPumpFlowRate()` line to copy. Once set, `getDailyVolumeMl()` and `getLastDoseVolumeMl()` return accurate consumption figures.
 
 ### Solenoid valves — time-proportional mode
 
