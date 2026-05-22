@@ -153,27 +153,27 @@ threshold    25 %      50 %      75 %                   100 %
 Every automatic dose passes through six phases:
 
 ```
-  ┌─────────────────────────────────────────────────────────┐
-  │                                                         │
-  │  ① SAMPLE BEFORE     2 readings × 30 s apart           │
-  │        │             averaged → before-dose value       │
-  │        ▼                                               │
-  │  ② CALCULATE PULSE                                      │
-  │        │   error %  =  |setpoint − reading| / band      │
-  │        │   PWM      ∝  error %   (proportional)         │
-  │        │   time     ∝  error %   (2 – 11 s)             │
-  │        │   rest     ∝  error %   (5 – 20 min)           │
-  │        ▼                                               │
-  │  ③ RUN PUMP          analogWrite(PWM) for pulse time    │
-  │        │                                               │
-  │        ▼                                               │
-  │  ④ REST              chemical mixes into pool water     │
-  │        │             (5 – 20 min, proportional to dose) │
-  │        ▼                                               │
-  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart           │
-  │        │             averaged → after-dose value        │
-  │        ▼                                               │
-  │  ⑥ EVALUATE FEEDBACK                                    │
+  ┌──────────────────────────────────────────────────────────┐
+  │                                                          │
+  │  ① SAMPLE BEFORE     2 readings × 30 s apart             │
+  │        │             averaged → before-dose value        │
+  │        ▼                                                 │
+  │  ② CALCULATE PULSE                                       │
+  │        │   error %  =  |setpoint − reading| / band       │
+  │        │   PWM      ∝  error %   (proportional)          │
+  │        │   time     ∝  error %   (2 – 11 s)              │
+  │        │   rest     ∝  error %   (5 – 20 min)            │
+  │        ▼                                                 │
+  │  ③ RUN PUMP          analogWrite(PWM) for pulse time     │
+  │        │                                                 │
+  │        ▼                                                 │
+  │  ④ REST              chemical mixes into pool water      │
+  │        │             (5 – 20 min, proportional to dose)  │
+  │        ▼                                                 │
+  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart             │
+  │        │             averaged → after-dose value         │
+  │        ▼                                                 │
+  │  ⑥ EVALUATE FEEDBACK                                     │
   │        │  update EMA delivery baseline                   │
   │        ├─ EMA ratio < threshold? (default 20 %)          │
   │        │       └──────────────► ALARM_INEFFECTIVE        │
@@ -182,7 +182,7 @@ Every automatic dose passes through six phases:
   │        │     yes ──► failedAttempts=0; adaptive PB nudge │
   │        └─     no  ──► failedAttempts++; boost next dose  │
   │                       alarm after 3 (ALARM_INEFFECTIVE)  │
-  └────────────────────────┬────────────────────────────────┘
+  └────────────────────────┬─────────────────────────────────┘
                            │ repeat
                            ▼
 ```
