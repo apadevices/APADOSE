@@ -11,8 +11,8 @@
  * RTC (DS3231) provides:
  *   - Daily dose counter reset at midnight for all pumps
  *   - Dosing window 08:00–20:00 for pH and CL (no night dosing)
- *   - Floc schedule: Tuesday and Friday at 09:00
- *   - Algi schedule: Monday at 09:00
+ *   - Floc schedule: every 3 days at 09:00 (use setScheduledDose)
+ *   - Algi schedule: every 7 days at 09:00 (use setScheduledDose)
  *
  * Shock / super-chlorination:
  *   Press PIN_SHOCK_BUTTON to trigger a pro-mode shock:
@@ -120,37 +120,6 @@ void onStatus(const char* msg) {
   Serial.println(msg);
 }
 
-// --- Scheduled dosing for sensor-less pumps ---
-uint8_t lastFlocDay = 255;
-uint8_t lastAlgiDay = 255;
-
-void handleScheduledDosing() {
-  if (!filterRunning()) return;  // never dose without filtration
-
-  DateTime now = rtc.now();
-  uint8_t  dow = now.dayOfTheWeek();  // 0=Sun 1=Mon 2=Tue ... 6=Sat
-
-  // Floc: Tuesday (2) and Friday (5) after 09:00, once per day
-  if (now.hour() >= 9 &&
-      (dow == 2 || dow == 5) &&
-      now.day() != lastFlocDay) {
-    if (flocPump.triggerManualDose(30000UL)) {  // 30 s
-      lastFlocDay = now.day();
-      Serial.println("[FLOC] Scheduled dose triggered.");
-    }
-  }
-
-  // Algi: Monday (1) after 09:00, once per day
-  if (now.hour() >= 9 &&
-      dow == 1 &&
-      now.day() != lastAlgiDay) {
-    if (algiPump.triggerManualDose(20000UL)) {  // 20 s
-      lastAlgiDay = now.day();
-      Serial.println("[ALGI] Scheduled dose triggered.");
-    }
-  }
-}
-
 bool lastAckState   = HIGH;
 bool lastShockState = HIGH;
 
@@ -184,17 +153,21 @@ void setup() {
   clPump.setCallbacks(onAlarm, onAlarmCleared, onStatus);
   clPump.begin(getORP, filterRunning, DOSE_CL, CL_PLUS, 20, 12);
 
-  // Flocculant — sensor-less, schedule-driven
+  // Flocculant — sensor-less, scheduled every 3 days at 09:00 for 30 s
   flocPump.setPumpRange(65, 255);
+  flocPump.setRTCCallback(getRTC);
   flocPump.setExternalStopCallback(dosingBlocked);
   flocPump.setCallbacks(onAlarm, onAlarmCleared, onStatus);
   flocPump.begin(nullptr, filterRunning, DOSE_PH, PH_PLUS, 0, 1);
+  flocPump.setScheduledDose(9, 0, 30UL * 1000UL, 3);  // every 3 days at 09:00
 
-  // Algaecide — sensor-less, schedule-driven
+  // Algaecide — sensor-less, scheduled every 7 days at 09:00 for 20 s
   algiPump.setPumpRange(65, 255);
+  algiPump.setRTCCallback(getRTC);
   algiPump.setExternalStopCallback(dosingBlocked);
   algiPump.setCallbacks(onAlarm, onAlarmCleared, onStatus);
   algiPump.begin(nullptr, filterRunning, DOSE_PH, PH_PLUS, 0, 1);
+  algiPump.setScheduledDose(9, 0, 20UL * 1000UL, 7);  // every 7 days at 09:00
 
   // System-wide parameters — call AFTER begin() so EEPROM is initialised on all platforms.
   // Both values apply to all pump instances simultaneously and are saved to EEPROM.
@@ -224,8 +197,6 @@ void loop() {
   clPump.update();
   flocPump.update();
   algiPump.update();
-
-  handleScheduledDosing();
 
   // --- ACK button — walks pumps in priority order, clears first active alarm ---
   bool ackState = digitalRead(PIN_ACK_BUTTON);
