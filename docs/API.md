@@ -402,6 +402,42 @@ pump.triggerPrime(10000, 100);  // 10 s at PWM 100 — gentle fill on a dry pipe
 
 ---
 
+## Scheduled Dosing
+
+```cpp
+void setScheduledDose(uint8_t hour, uint8_t minute,
+                      unsigned long durationMs,
+                      uint8_t intervalDays = 1,
+                      float   threshold    = 0.0f);
+```
+
+Arms a recurring dose that fires automatically at the configured wall-clock time. Requires `setRTCCallback()`. If no RTC callback is registered, the call is stored but never triggers.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `hour` | `uint8_t` | — | Hour of day to fire (0–23). |
+| `minute` | `uint8_t` | — | Minute of hour to fire (0–59). |
+| `durationMs` | `unsigned long` | — | Dose duration in milliseconds. Clamped to `MAX_MANUAL_DOSE_MS` (5 min). Pass `0` to disable scheduling on this instance. |
+| `intervalDays` | `uint8_t` | `1` | Fire every N days. `1` = daily, `7` = weekly, `14` = fortnightly. `0` is treated as `1`. |
+| `threshold` | `float` | `0.0` | Skip the dose when the sensor is already in the safe direction. `0.0` = always dose. For `PH_MINUS` pumps: skips if reading ≤ threshold. For `PH_PLUS` / `DOSE_CL` pumps: skips if reading ≥ threshold. Ignored for sensor-less pumps. |
+
+The library tracks the interval with a day-of-month counter that ticks once per calendar day (from the RTC). The dose is suppressed on interval days without resetting the countdown.
+
+**All standard guards apply.** The scheduled dose calls `triggerManualDose()` internally, so it is blocked by: active alarm, filter off, external stop, tank empty, daily limit, inter-pump lockout, or a dose/prime already running. The daily dose counter is incremented when the dose fires.
+
+```cpp
+// Algaecide every day at 09:00 for 30 s (sensor-less — no threshold)
+algiPump.setScheduledDose(9, 0, 30UL * 1000UL);
+
+// Flocculant every 7 days at 08:30 for 60 s
+flocPump.setScheduledDose(8, 30, 60UL * 1000UL, 7);
+
+// pH acid daily at 07:00 — skip if pH is already ≤ 7.4
+phPump.setScheduledDose(7, 0, 10UL * 1000UL, 1, 7.4f);
+```
+
+---
+
 ## Shock / Super-Chlorination
 
 Shock mode doses the chlorine pump at full power (`pumpMaxPWM`) until ORP reaches a target or a time ceiling expires, then automatically returns to normal proportional control. Use it after heavy bather load, algae events, storms, or any situation where proportional dosing is too slow to restore chlorine.
