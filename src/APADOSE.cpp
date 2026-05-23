@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.14.1
+ * Version: 3.14.3
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -625,16 +625,16 @@ DosingPulse ApaDose::calculateProportionalPulse() {
   pulse.pwmIntensity   = (uint8_t)constrain(max(rawPWM, minDosePWM), 0.0f, 255.0f);
 
   if (errorPercent <= 25.0f) {
-    pulse.pulseDuration = (unsigned long)(2000.0f + (errorPercent / 25.0f) * 2000.0f);
+    pulse.pulseDuration = (unsigned long)(10000.0f + (errorPercent / 25.0f) * 20000.0f);
     pulse.restPeriod    =  5UL * 60UL * 1000UL;
   } else if (errorPercent <= 50.0f) {
-    pulse.pulseDuration = (unsigned long)(4000.0f + ((errorPercent - 25.0f) / 25.0f) * 3000.0f);
+    pulse.pulseDuration = (unsigned long)(30000.0f + ((errorPercent - 25.0f) / 25.0f) * 30000.0f);
     pulse.restPeriod    = 10UL * 60UL * 1000UL;
   } else if (errorPercent <= 75.0f) {
-    pulse.pulseDuration = (unsigned long)(7000.0f + ((errorPercent - 50.0f) / 25.0f) * 3000.0f);
+    pulse.pulseDuration = (unsigned long)(60000.0f + ((errorPercent - 50.0f) / 25.0f) * 60000.0f);
     pulse.restPeriod    = 15UL * 60UL * 1000UL;
   } else {
-    pulse.pulseDuration = 11000UL;
+    pulse.pulseDuration = ZONE4_PULSE_MS;
     pulse.restPeriod    = 20UL * 60UL * 1000UL;
   }
 
