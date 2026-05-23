@@ -5,6 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.14.1] — 2026-05-23
+
+### Changed
+
+- **`setScheduledDose()` — `threshold` default changed from `0.0f` to `NAN`** — the default
+  behaviour is now "dose only when the sensor has drifted past the pump's own setpoint" rather
+  than "always dose unconditionally". Pass `0.0f` explicitly to restore the always-dose
+  behaviour; pass any finite value to use a specific override. For sensor-less pumps
+  (algaecide, flocculant) the threshold is always ignored — they dose unconditionally
+  regardless of this parameter.
+
+---
+
 ## [3.14.0] — 2026-05-22
 
 ### Added
