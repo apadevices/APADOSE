@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.14.0"
+#define APA_DOSE_VERSION "3.14.1"
 #define APA_DOSE_VERSION_MAJOR 3
 #define APA_DOSE_VERSION_MINOR 14
-#define APA_DOSE_VERSION_PATCH 0
+#define APA_DOSE_VERSION_PATCH 1
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -460,16 +460,19 @@ public:
 
   // Scheduled pre-dose — requires RTC callback; inert without one. Call before or after begin().
   // Fires once per intervalDays at the given hour:minute, subject to all triggerManualDose() guards.
-  // threshold: only fire if sensorValue is on the wrong side of this value (0.0 = always fire).
+  // threshold: condition that must be met before the dose fires.
+  //   NAN (default) — use the pump's own setpoint as the condition (dose only when sensor has drifted).
+  //   0.0f          — always fire regardless of sensor reading.
+  //   Any finite value — explicit override (e.g. 7.4 on a pH pump).
   //   Lowering pumps (PH_MINUS): fires when sensorValue > threshold.
   //   Raising pumps (PH_PLUS / CL_PLUS): fires when sensorValue < threshold.
-  //   Sensor-less pumps (algaecide, flocculant): always use threshold = 0.0 (default).
+  //   Sensor-less pumps (algaecide, flocculant): threshold is ignored — always doses.
   // intervalDays: 1 = daily (default), 2 = every 2 days, 7 = weekly, etc.
   // Pass durationMs = 0 to disable.
   void setScheduledDose(uint8_t hour, uint8_t minute,
                         unsigned long durationMs,
                         uint8_t intervalDays = 1,
-                        float   threshold    = 0.0f);
+                        float   threshold    = NAN);
 
   // Shock / super-chlorination — DOSE_CL instances only; filter callback required
   // Hobbyist: pass SHOCK_ORP_STANDARD (or SHOCK_ORP_MILD / SHOCK_ORP_AGGRESSIVE) and current pH.
