@@ -133,7 +133,7 @@ Calibrates the PWM range for this specific pump motor.
 
 A 10% minimum floor above `minPWM` is applied to every dose to overcome pipe and hose resistance.
 
-**Solenoid / time-proportional mode:** setting `minPWM == maxPWM` (e.g. `255, 255`) locks PWM at that fixed level. Proportionality then comes entirely from pulse duration — the solenoid opens fully for 2–11 s scaled to the error percentage. All feedback, safety, and alarm systems function identically in this mode.
+**Solenoid / time-proportional mode:** setting `minPWM == maxPWM` (e.g. `255, 255`) locks PWM at that fixed level. Proportionality then comes entirely from pulse duration — the solenoid opens fully for 10–180 s scaled to the error percentage. All feedback, safety, and alarm systems function identically in this mode.
 
 ---
 
@@ -1066,10 +1066,10 @@ Sensor error is mapped to pulse intensity and duration:
 
 | Error % of band | PWM | Pulse duration | Rest period |
 |-----------------|-----|----------------|-------------|
-| 0–25% | min+10% floor | 2–4 s | 5 min |
-| 25–50% | proportional | 4–7 s | 10 min |
-| 50–75% | proportional | 7–10 s | 15 min |
-| 75–100% | max | 11 s | 20 min |
+| 0–25% | min+10% floor | 10–30 s | 5 min |
+| 25–50% | proportional | 30–60 s | 10 min |
+| 50–75% | proportional | 60–120 s | 15 min |
+| 75–100% | max | 180 s | 20 min |
 
 After failed attempts, `applyFeedbackCorrections()` boosts PWM by 30% (1 failure) or 50% + double duration (2+ failures), capped at `pumpMaxPWM`.
 
