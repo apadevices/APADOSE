@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="extras/apadose-banner.png" alt="APADOSE" width="600">
+  <img src="extras/apadose-banner.png" alt="APADOSE" width="400">
 </p>
 
 # APA-Dose Library
@@ -7,7 +7,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.14.0** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.14.1** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
@@ -154,27 +154,27 @@ threshold    25 %      50 %      75 %                   100 %
 Every automatic dose passes through six phases:
 
 ```
-  ┌──────────────────────────────────────────────────────────┐
-  │                                                          │
-  │  ① SAMPLE BEFORE     2 readings × 30 s apart             │
-  │        │             averaged → before-dose value        │
-  │        ▼                                                 │
-  │  ② CALCULATE PULSE                                       │
-  │        │   error %  =  |setpoint − reading| / band       │
-  │        │   PWM      ∝  error %   (proportional)          │
-  │        │   time     ∝  error %   (2 – 11 s)              │
-  │        │   rest     ∝  error %   (5 – 20 min)            │
-  │        ▼                                                 │
-  │  ③ RUN PUMP          analogWrite(PWM) for pulse time     │
-  │        │                                                 │
-  │        ▼                                                 │
-  │  ④ REST              chemical mixes into pool water      │
-  │        │             (5 – 20 min, proportional to dose)  │
-  │        ▼                                                 │
-  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart             │
-  │        │             averaged → after-dose value         │
-  │        ▼                                                 │
-  │  ⑥ EVALUATE FEEDBACK                                     │
+  ┌─────────────────────────────────────────────────────────┐
+  │                                                         │
+  │  ① SAMPLE BEFORE     2 readings × 30 s apart           │
+  │        │             averaged → before-dose value       │
+  │        ▼                                               │
+  │  ② CALCULATE PULSE                                      │
+  │        │   error %  =  |setpoint − reading| / band      │
+  │        │   PWM      ∝  error %   (proportional)         │
+  │        │   time     ∝  error %   (2 – 11 s)             │
+  │        │   rest     ∝  error %   (5 – 20 min)           │
+  │        ▼                                               │
+  │  ③ RUN PUMP          analogWrite(PWM) for pulse time    │
+  │        │                                               │
+  │        ▼                                               │
+  │  ④ REST              chemical mixes into pool water     │
+  │        │             (5 – 20 min, proportional to dose) │
+  │        ▼                                               │
+  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart           │
+  │        │             averaged → after-dose value        │
+  │        ▼                                               │
+  │  ⑥ EVALUATE FEEDBACK                                    │
   │        │  update EMA delivery baseline                   │
   │        ├─ EMA ratio < threshold? (default 20 %)          │
   │        │       └──────────────► ALARM_INEFFECTIVE        │
@@ -183,7 +183,7 @@ Every automatic dose passes through six phases:
   │        │     yes ──► failedAttempts=0; adaptive PB nudge │
   │        └─     no  ──► failedAttempts++; boost next dose  │
   │                       alarm after 3 (ALARM_INEFFECTIVE)  │
-  └────────────────────────┬─────────────────────────────────┘
+  └────────────────────────┬────────────────────────────────┘
                            │ repeat
                            ▼
 ```
@@ -428,14 +428,20 @@ if (t.weekday == 1 && t.hour == 8 && !weeklyFlocDone) {
 `setScheduledDose(hour, minute, durationMs)` arms a dose that fires automatically at the configured wall-clock time — no tracking code in `loop()` required. An RTC callback must be registered via `setRTCCallback()` for the schedule to work.
 
 ```cpp
-// Algaecide every day at 09:00 for 30 s
+// Algaecide every day at 09:00 for 30 s (sensor-less — threshold ignored, always doses)
 algiPump.setScheduledDose(9, 0, 30UL * 1000UL);
 
-// Flocculant every 7 days at 08:30 for 60 s
+// Flocculant every 7 days at 08:30 for 60 s (sensor-less — threshold ignored, always doses)
 flocPump.setScheduledDose(8, 30, 60UL * 1000UL, 7);
 
-// pH acid daily at 07:00 — skip if pH already ≤ 7.4 (sensor already in range)
+// pH acid daily at 07:00 — doses only if pH has drifted past setpoint (default threshold = setpoint)
+phPump.setScheduledDose(7, 0, 10UL * 1000UL);
+
+// pH acid daily — explicit threshold: dose only if pH > 7.4 regardless of setpoint
 phPump.setScheduledDose(7, 0, 10UL * 1000UL, 1, 7.4f);
+
+// pH acid daily — always dose at 07:00 no matter what the sensor reads
+phPump.setScheduledDose(7, 0, 10UL * 1000UL, 1, 0.0f);
 ```
 
 Optional parameters:
@@ -443,7 +449,7 @@ Optional parameters:
 | # | Name | Default | Effect |
 |---|------|---------|--------|
 | 4 | `intervalDays` | `1` | Repeat every N days. `7` = weekly, `14` = fortnightly. |
-| 5 | `threshold` | `0.0` | Skip dose if sensor is already in the safe direction. `0.0` = always dose regardless of reading. Ignored for sensor-less pumps. |
+| 5 | `threshold` | setpoint | Skip dose if sensor is already in the safe direction. Default `NAN` = use the pump's own setpoint. `0.0` = always dose. Any finite value = explicit override. Ignored for sensor-less pumps. |
 
 The threshold direction is resolved automatically: for a `PH_MINUS` pump, `7.4` means "skip if pH ≤ 7.4"; for a `PH_PLUS` or `DOSE_CL` pump, `7.4` means "skip if pH ≥ 7.4". No direction parameter needed.
 
