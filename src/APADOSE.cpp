@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.14.0
+ * Version: 3.14.1
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -74,7 +74,7 @@ ApaDose::ApaDose(uint8_t pumpPin, uint16_t eepromAddress)
     lastDoseSensorBefore(0.0f), lastDoseSensorAfter(0.0f),
     pumpFlowRateMlPerMin(450.0f), dailyVolumeMl(0.0f), lastDoseVolumeMl(0.0f),
     _schedHour(0), _schedMinute(0), _schedDurationMs(0),
-    _schedThreshold(0.0f), _schedIntervalDays(1),
+    _schedThreshold(NAN), _schedIntervalDays(1),
     _schedDaysRemaining(0), _schedLastSeenDay(255),
     nudgePct(0), adaptedPB(0.0f),
     shockStartTime(0), postShockCooldownEnd(0),
@@ -1165,10 +1165,10 @@ void ApaDose::manageScheduledDose() {
   // Fire only when countdown reaches zero and the clock matches the configured time
   if (_schedDaysRemaining == 0 &&
       t.hour == _schedHour && t.minute == _schedMinute) {
-    bool condMet = (_schedThreshold == 0.0f) ||
-                   (readSensor != nullptr &&
-                    (dosesUp() ? sensorValue < _schedThreshold
-                               : sensorValue > _schedThreshold));
+    float eff = isnan(_schedThreshold) ? setpoint : _schedThreshold;
+    bool condMet = (eff == 0.0f) ||
+                   (readSensor == nullptr) ||
+                   (dosesUp() ? sensorValue < eff : sensorValue > eff);
     if (condMet && triggerManualDose(_schedDurationMs)) {
       _schedDaysRemaining = _schedIntervalDays;
     }
