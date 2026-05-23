@@ -5,6 +5,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.14.3] — 2026-05-23
+
+### Fixed
+
+- **Stale pulse duration values in documentation** — ASCII diagrams, dosing zones tables, timing
+  notes, and solenoid mode description in README and API.md all referenced the old 2–11 s range;
+  updated to reflect the 10–180 s values introduced in 3.14.2. Expected cycle time note updated
+  from 8–23 min to 8–26 min to account for the longer maximum pulse.
+
+---
+
+## [3.14.2] — 2026-05-23
+
+### Changed
+
+- **Proportional pulse durations increased across all zones** — previous values (2–11 s) were
+  insufficient for real-world pool chemistry. New ranges match practical dosing requirements:
+
+  | Zone | Error | Pulse duration | Rest |
+  |------|-------|----------------|------|
+  | 1 | 0–25 % | 10–30 s | 5 min |
+  | 2 | 25–50 % | 30–60 s | 10 min |
+  | 3 | 50–75 % | 60–120 s | 15 min |
+  | 4 | 75–100 % | 180 s (flat) | 20 min |
+
+  Rest periods are unchanged. Volume scaling (`setPoolVolume()`) still applies on top.
+
+- **`FEEDBACK_PULSE_MAX_MS` derived from `ZONE4_PULSE_MS`** — replaced the hardcoded
+  `14300UL` constant with `ZONE4_PULSE_MS × 5/3` (≈ ×1.67 = 300 s / 5 min). `ZONE4_PULSE_MS`
+  is the single named anchor; the feedback cap updates automatically when zone 4 duration
+  changes. Escalation path: 180 s → 234 s (×1.3) → 300 s cap (×1.3, capped).
+  No API change, no EEPROM change.
+
+---
+
 ## [3.14.1] — 2026-05-23
 
 ### Changed
