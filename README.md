@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="extras/apadose-banner.png" alt="APADOSE" width="600">
+  <img src="extras/apadose-banner.png" alt="APADOSE" width="400">
 </p>
 
 # APA-Dose Library
@@ -7,7 +7,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.14.1** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.14.3** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
@@ -110,7 +110,7 @@ Doses when pH falls below setpoint — raises pH toward target.
      (safety band)
 
   Pump PWM:    pumpMaxPWM  ◄──────────────────────  min+10%   off
-  Pulse time:  11 s        ◄──────────────────────  2 s        off
+  Pulse time:  180 s       ◄──────────────────────  10 s       off
   Rest period: 20 min      ◄──────────────────────  5 min       —
 
   Optional dead-band  (setDeadbandPct, default off):
@@ -135,7 +135,7 @@ threshold    25 %      50 %      75 %                   100 %
                                                       (safety band)
 
   Pump PWM:    off  min+10%  ──────────────────────►  pumpMaxPWM
-  Pulse time:   —   2 s      ──────────────────────►  11 s
+  Pulse time:   —   10 s     ──────────────────────►  180 s
   Rest period:  —   5 min    ──────────────────────►  20 min
 
   Optional dead-band  (setDeadbandPct, default off):
@@ -154,27 +154,27 @@ threshold    25 %      50 %      75 %                   100 %
 Every automatic dose passes through six phases:
 
 ```
-  ┌──────────────────────────────────────────────────────────┐
-  │                                                          │
-  │  ① SAMPLE BEFORE     2 readings × 30 s apart             │
-  │        │             averaged → before-dose value        │
-  │        ▼                                                 │
-  │  ② CALCULATE PULSE                                       │
-  │        │   error %  =  |setpoint − reading| / band       │
-  │        │   PWM      ∝  error %   (proportional)          │
-  │        │   time     ∝  error %   (2 – 11 s)              │
-  │        │   rest     ∝  error %   (5 – 20 min)            │
-  │        ▼                                                 │
-  │  ③ RUN PUMP          analogWrite(PWM) for pulse time     │
-  │        │                                                 │
-  │        ▼                                                 │
-  │  ④ REST              chemical mixes into pool water      │
-  │        │             (5 – 20 min, proportional to dose)  │
-  │        ▼                                                 │
-  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart             │
-  │        │             averaged → after-dose value         │
-  │        ▼                                                 │
-  │  ⑥ EVALUATE FEEDBACK                                     │
+  ┌─────────────────────────────────────────────────────────┐
+  │                                                         │
+  │  ① SAMPLE BEFORE     2 readings × 30 s apart           │
+  │        │             averaged → before-dose value       │
+  │        ▼                                               │
+  │  ② CALCULATE PULSE                                      │
+  │        │   error %  =  |setpoint − reading| / band      │
+  │        │   PWM      ∝  error %   (proportional)         │
+  │        │   time     ∝  error %   (10 – 180 s)            │
+  │        │   rest     ∝  error %   (5 – 20 min)           │
+  │        ▼                                               │
+  │  ③ RUN PUMP          analogWrite(PWM) for pulse time    │
+  │        │                                               │
+  │        ▼                                               │
+  │  ④ REST              chemical mixes into pool water     │
+  │        │             (5 – 20 min, proportional to dose) │
+  │        ▼                                               │
+  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart           │
+  │        │             averaged → after-dose value        │
+  │        ▼                                               │
+  │  ⑥ EVALUATE FEEDBACK                                    │
   │        │  update EMA delivery baseline                   │
   │        ├─ EMA ratio < threshold? (default 20 %)          │
   │        │       └──────────────► ALARM_INEFFECTIVE        │
@@ -183,21 +183,21 @@ Every automatic dose passes through six phases:
   │        │     yes ──► failedAttempts=0; adaptive PB nudge │
   │        └─     no  ──► failedAttempts++; boost next dose  │
   │                       alarm after 3 (ALARM_INEFFECTIVE)  │
-  └────────────────────────┬─────────────────────────────────┘
+  └────────────────────────┬────────────────────────────────┘
                            │ repeat
                            ▼
 ```
 
-> **Expected timing:** A full cycle takes **8 – 23 minutes** depending on how far the sensor is from setpoint — pre-sampling alone is 1 minute, rest is 5 – 20 minutes, post-sampling is 1.5 minutes. Add any startup blackout on top. Seeing nothing on Serial for several minutes after boot is normal. Enable `APA_DOSE_DEBUG` in `platformio.ini` (`build_flags = -D APA_DOSE_DEBUG`) to print per-cycle progress and confirm the library is running.
+> **Expected timing:** A full cycle takes **8 – 26 minutes** depending on how far the sensor is from setpoint — pre-sampling alone is 1 minute, pulse is 10 – 180 seconds, rest is 5 – 20 minutes, post-sampling is 1.5 minutes. Add any startup blackout on top. Seeing nothing on Serial for several minutes after boot is normal. Enable `APA_DOSE_DEBUG` in `platformio.ini` (`build_flags = -D APA_DOSE_DEBUG`) to print per-cycle progress and confirm the library is running.
 
 ### Dosing zones
 
 | Error (% of band) | PWM output | Pulse duration | Rest period |
 |:-----------------:|:----------:|:--------------:|:-----------:|
-| 0 – 25 %          | proportional | 2 – 4 s      | 5 min       |
-| 25 – 50 %         | proportional | 4 – 7 s      | 10 min      |
-| 50 – 75 %         | proportional | 7 – 10 s     | 15 min      |
-| 75 – 100 %        | pumpMaxPWM   | 11 s         | 20 min      |
+| 0 – 25 %          | proportional | 10 – 30 s    | 5 min       |
+| 25 – 50 %         | proportional | 30 – 60 s    | 10 min      |
+| 50 – 75 %         | proportional | 60 – 120 s   | 15 min      |
+| 75 – 100 %        | pumpMaxPWM   | 180 s        | 20 min      |
 
 A 10 % minimum floor above `pumpMinPWM` is always applied to overcome pipe resistance.
 
@@ -605,7 +605,7 @@ Solenoids are binary devices and cannot be speed-controlled by PWM. Set `min == 
 pump.setPumpRange(255, 255);  // solenoid: always full-on; time varies with error
 ```
 
-With `min == max`, the dosing zones table still applies — the solenoid opens for 2–11 s proportional to the error percentage. Feedback, safety, and alarm systems work identically.
+With `min == max`, the dosing zones table still applies — the solenoid opens for 10–180 s proportional to the error percentage. Feedback, safety, and alarm systems work identically.
 
 ### Volume tracking
 
