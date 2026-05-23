@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.14.1"
+#define APA_DOSE_VERSION "3.14.3"
 #define APA_DOSE_VERSION_MAJOR 3
 #define APA_DOSE_VERSION_MINOR 14
-#define APA_DOSE_VERSION_PATCH 1
+#define APA_DOSE_VERSION_PATCH 3
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -80,9 +80,11 @@ constexpr unsigned long SENSOR_STALE_MS  = 30UL * 60UL * 1000UL;
 // Short enough to catch a failed probe quickly; long enough to ignore momentary glitches.
 constexpr unsigned long SENSOR_FAULT_MS       =  2UL * 60UL * 1000UL;
 
-// Maximum pulse duration applied during feedback correction (2+ failed attempts).
-// 30% above the 11 s proportional maximum — enough extra reach without over-dosing.
-constexpr unsigned long FEEDBACK_PULSE_MAX_MS = 14300UL;
+// Zone 4 (75–100 % error) base pulse duration — also the anchor for the feedback cap.
+constexpr unsigned long ZONE4_PULSE_MS        = 180000UL;
+// Feedback escalation ceiling: zone 4 × 5/3 (≈ ×1.67) = 300 s (5 min).
+// Escalation path: 180 s → 234 s (×1.3) → 300 s cap (×1.3, capped).
+constexpr unsigned long FEEDBACK_PULSE_MAX_MS = ZONE4_PULSE_MS * 5UL / 3UL;
 
 // How long the filtration pump must be continuously off before a status warning fires.
 constexpr unsigned long FILTER_OFF_ALARM_MS = 30UL * 60UL * 1000UL;  // 30 minutes
