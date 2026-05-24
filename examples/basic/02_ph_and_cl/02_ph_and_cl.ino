@@ -36,10 +36,15 @@ const uint8_t PIN_ALARM_LED    = 13;
 const uint8_t PIN_ACK_BUTTON   = 3;
 const uint8_t PIN_SHOCK_BUTTON = 4;  // dedicated shock trigger
 
-// Each ApaDose instance must have a unique EEPROM base address, spaced by
-// sizeof(ConfigData). Without unique addresses both pumps would overwrite
-// the same bytes and corrupt each other's saved configuration on every boot.
-ApaDose phPump(PIN_PH_PUMP);                                                // EEPROM 192 (default)
+// Each ApaDose instance needs a unique EEPROM start address, spaced sizeof(ConfigData) = 20 bytes apart.
+// Without unique addresses, both pumps share the same 20 bytes — each boot one pump overwrites the
+// other's saved setpoint, proportional band, and direction, causing erratic behaviour.
+// Default address is 192. Add one instance per 20-byte block:
+//   phPump → 192  (default, APA_DOSE_EEPROM_ADDRESS)
+//   clPump → 212  (192 + 20)
+//   3rd pump → 232  (192 + 40)   APA_DOSE_EEPROM_ADDRESS + 2*sizeof(ConfigData)
+//   4th pump → 252  (192 + 60)   APA_DOSE_EEPROM_ADDRESS + 3*sizeof(ConfigData)
+ApaDose phPump(PIN_PH_PUMP);                                                // EEPROM 192
 ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 212
 
 float getpH()  { return 7.2; /* replace with phSensor.getPH()   */ }
@@ -93,8 +98,10 @@ void setup() {
 
   // --- Pool size scaling (call AFTER begin) ---
   // The library is calibrated for a 20 m³ reference pool.
-  // Pools above ~30 m³ need this — without it, pulses are too short and the
-  // pump will never converge to setpoint. Set once; survives factoryReset().
+  // If your pool is 30 m³ or smaller: leave this commented out — defaults work fine.
+  // If your pool is larger than ~30 m³: uncomment and set your volume. Without it,
+  // dose pulses are too short for the larger water volume and pH/ORP will never converge.
+  // This setting is shared across all pump instances and survives factoryReset().
   // ApaDose::setPoolVolume(35);  // uncomment and set to YOUR pool volume in m³ (10–90)
 
   // --- Dead-band (call AFTER begin, optional) ---
@@ -103,11 +110,22 @@ void setup() {
   // ApaDose::setDeadbandPct(10);  // uncomment to enable; 0–20 % of proportional band
 
   // --- pH-first priority + cross-settle coupling (call AFTER both begin() calls) ---
-  // Option J: automatically suspends CL dosing when pH > 7.6 — chlorine is ineffective above this.
-  // Option A: holds CL for N minutes after a pH dose to let chemistry equilibrate.
-  // Both are disabled by default. Uncomment to enable (requires both phPump and clPump instances).
+  // Option J: suspends CL dosing when pH > 7.6 — above that level chlorine is mostly wasted
+  //           (chlorine efficiency drops sharply in alkaline water, so dosing more is pointless
+  //           until pH drops back into range).
+  // Option A: holds CL dosing for N minutes after each pH dose. Without this, adding acid
+  //           temporarily lowers ORP, which makes the CL pump dose immediately — raising ORP
+  //           which pushes pH back up, causing the pH pump to dose again. The two pumps end up
+  //           fighting each other in a slow see-saw. The cross-settle hold breaks that loop.
+  // Both disabled by default. Uncomment to enable (requires both pump instances).
   // clPump.setPhPump(&phPump);          // register the link — activates Option J automatically
   // clPump.setCrossSettleMinutes(15);   // Option A: hold CL 15 min after pH doses (0 = off)
+
+  // --- Inter-pump lockout (always active, no configuration needed) ---
+  // After either pump doses, ALL pump instances wait 90 seconds before the next dose.
+  // This prevents acid and chlorine being injected back-to-back at the same pipe inlet —
+  // they can react to produce chlorine gas. If your second pump seems slow after the first
+  // one runs, this is the reason — it is working as intended.
 
   Serial.println(F("Ready. Press SHOCK button to trigger shock dosing."));
   Serial.println(F("SHOCK button requires: filter running, pH 7.0-7.6, ORP below target."));
