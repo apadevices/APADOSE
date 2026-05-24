@@ -7,7 +7,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.15.0** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.15.1** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
@@ -29,7 +29,7 @@ Part of the **APA Devices** product family.
 - **Filtration interlock** — dosing blocked the instant the filter stops; a running dose halts immediately; no chemical ever injected into stagnant water
 - **External stop** — optional callback from any external system (maintenance mode, backwash, cover) blocks all dosing immediately; a mandatory 5-minute settling time applies after the signal clears before dosing resumes
 - **Chemical tank empty sensor** — optional dry-contact callback (`setTankEmptyCallback()`) fires `ALARM_TANK_EMPTY` the instant the tank runs dry; blocks dosing and priming until the tank is refilled and acknowledged; zero SRAM cost if unused
-- **Over-feed alarm (OFA)** — optional cumulative daily pump run-time limit, auto-scaled by pool volume; `setOFALimit(minutes)` sets the reference limit for a 20 m³ pool; fires a status warning at 70 % and `ALARM_OFA` (latching, ACK required) at 90 %; resets automatically at midnight; `getOFAPct()` returns today's consumption (0–100); disabled by default
+- **Over-feed alarm (OFA)** — protects against over-dosing by tracking how many minutes each pump runs each day; call `setOFALimit(30)` once in `setup()` to set a 30-minute reference for a 20 m³ pool — the library scales the limit automatically for other pool sizes if you called `setPoolVolume()`; at 70 % of the limit a status warning fires (dosing continues); at 90 % `ALARM_OFA` fires, dosing stops, and the ACK button is required — the counter resets itself automatically at midnight so the next day starts fresh; `getOFAPct()` returns today's usage (0–100 %) for a dashboard row; disabled by default
 - **Setpoint range enforcement** — pH 6.8 – 7.8 and ORP 400 – 850 mV enforced on every write; out-of-range values rejected before reaching EEPROM
 - **Inter-pump chemical lockout** — 90-second enforced gap after any pump instance doses; prevents incompatible chemicals meeting at the same pipe inlet
 - **Startup blackout** — optional N-minute dosing hold after power-on (`blackoutMinutes` parameter in `begin()`); gives electrochemical sensors time to stabilize before the first dose decision; `isInStartupBlackout()` exposes the state for display
