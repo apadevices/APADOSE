@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.15.1] — 2026-05-24
+
+### Fixed / Documentation
+
+- **README — OFA description rewritten for beginner clarity** — replaced technical phrasing
+  ("cumulative daily pump run-time limit, latching, ACK required") with plain-language explanation;
+  scaling, warning, stop, midnight reset, and `getOFAPct()` dashboard use all explained without
+  assuming prior familiarity.
+- **Example 06 (alarm management) — OFA coverage added**
+  - `ALARM_OFA` added to alarm behaviour summary in header comment with full lifecycle explanation
+  - `requiresAck()` updated to include `ALARM_OFA`
+  - `printOFA()` helper added: prints pump OFA % in the periodic status report when enabled
+  - `setup()` OFA configuration block added with pool-scaling explanation and ready-to-uncomment lines
+
+---
+
 ## [3.15.0] — 2026-05-24
 
 ### Added
