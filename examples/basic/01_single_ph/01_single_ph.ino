@@ -47,6 +47,9 @@ bool filterRunning() { return digitalRead(PIN_FILTER_RELAY) == HIGH; }
 
 // Float up (tank full) → switch open → pin HIGH → returns false.
 // Float down (tank empty) → switch closed → pin LOW → returns true → ALARM_TANK_EMPTY.
+// Why: running a peristaltic pump dry (no liquid) wears out the rollers fast and can
+// permanently damage the pump head within hours. The library blocks dosing the moment
+// this returns true and fires ALARM_TANK_EMPTY so you know to refill.
 bool tankEmpty() { return digitalRead(PIN_TANK_SENSOR) == LOW; }
 
 // --- Callbacks ---
@@ -86,20 +89,25 @@ void setup() {
 
   // Sensor + filter + type + direction + 20 min blackout + max 6 doses/day
   // PH_MINUS = acid pump (lowers pH); use PH_PLUS for a base pump (raises pH).
-  // Normal on first install — returns false when no valid config exists yet or EEPROM is corrupt.
+  // Returns false on first install (blank EEPROM) or after EEPROM corruption — safe to ignore.
+  // Defaults loaded: setpoint 7.4, proportional band 1.0 pH. Dosing starts immediately with
+  // these values; use setSetpoint() / setProportionalBand() in setup() to override if needed.
   if (!phPump.begin(getpH, filterRunning, DOSE_PH, PH_MINUS, 20, 6))
-    Serial.println("[INFO] No saved config — defaults loaded.");
+    Serial.println("[INFO] No saved config — defaults loaded (SP 7.4, PB 1.0).");
 
   // --- Pool size scaling (call AFTER begin) ---
   // The library is calibrated for a 20 m³ reference pool.
-  // Pools above ~30 m³ need this — without it, pulses are too short and the
-  // pump will never converge to setpoint. Set once; survives factoryReset().
+  // If your pool is 30 m³ or smaller: leave this commented out — defaults work fine.
+  // If your pool is larger than ~30 m³: uncomment and set your volume. Without it,
+  // dose pulses are too short for the larger water volume and pH will never converge.
+  // This setting is shared across all pump instances and survives factoryReset().
   // ApaDose::setPoolVolume(35);  // uncomment and set to YOUR pool volume in m³ (10–90)
 
   // --- Dose efficiency threshold (call AFTER begin, optional) ---
-  // The library tracks delivery health via an EMA of normalised sensor shift per ms of pump run.
-  // When a dose achieves less than this % of the learned baseline, ALARM_INEFFECTIVE fires.
-  // Default is 20 (active out of the box after 3 warm-up doses). Pass 0 to disable the alarm.
+  // After 3 warm-up doses the library learns how much each dose normally shifts the sensor.
+  // If a later dose achieves less than this % of that learned baseline, ALARM_INEFFECTIVE fires.
+  // Typical cause: empty chemical tank, blocked tube, or pump head failure.
+  // Default is 20 % (active automatically after warm-up). Pass 0 to disable.
   // phPump.setEfficiencyThreshold(20);  // default — shown here for clarity
 }
 
