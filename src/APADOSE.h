@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.15.0"
+#define APA_DOSE_VERSION "3.15.1"
 #define APA_DOSE_VERSION_MAJOR 3
 #define APA_DOSE_VERSION_MINOR 15
-#define APA_DOSE_VERSION_PATCH 0
+#define APA_DOSE_VERSION_PATCH 1
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
