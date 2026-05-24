@@ -5,6 +5,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.15.0] — 2026-05-24
+
+### Added
+
+- **`setOFALimit(referenceMinutes)` — over-feed alarm (OFA)** — optional cumulative daily pump
+  run-time guard. Sets a reference limit (minutes) for a 20 m³ pool; the library auto-scales the
+  limit with `setPoolVolume()`. A status warning fires at 70 % of the daily limit; `ALARM_OFA`
+  fires at 90 % (latching, `acknowledgeAlarm()` required). The alarm and counter reset
+  automatically at midnight (RTC or millis roll-over). `getOFAPct()` returns today's consumption
+  as 0–100 %. Disabled by default (`_ofaLimitMin = 0`). Applies to proportional dosing and shock
+  mode; manual and prime doses are excluded.
+  - RAM cost: +3 bytes per instance (two-pump sketch: 841 B → 847 B on Uno)
+  - Flash cost: +558 bytes on Uno
+  - New alarm constant: `ALARM_OFA`
+  - New constants: `OFA_WARNING_PCT` (70), `OFA_STOP_PCT` (90)
+
+---
+
 ## [3.14.3] — 2026-05-23
 
 ### Fixed
