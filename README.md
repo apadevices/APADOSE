@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="extras/apadose-banner.png" alt="APADOSE" width="600">
+  <img src="extras/apadose-banner.png" alt="APADOSE" width="400">
 </p>
 
 # APA-Dose Library
@@ -7,7 +7,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.14.3** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.15.0** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
@@ -16,7 +16,7 @@ Part of the **APA Devices** product family.
 **Proportional dosing control**
 - **True proportional output** — both PWM speed and pulse duration scale continuously with error; never bang-bang on/off
 - **Closed-loop feedback** — 2 sensor readings averaged before each dose, 3 after; verifies the water actually moved toward setpoint
-- **Adaptive dose correction** — first failed dose gets +30 % PWM boost; second gets +50 % PWM and doubled pulse time; alarm fires only after three consecutive failures — no human intervention needed between attempts
+- **Adaptive dose correction** — first failed dose gets +30 % PWM boost; second gets +50 % PWM and doubled pulse time (capped at 5 min); alarm fires only after three consecutive failures — no human intervention needed between attempts
 - **Dose delivery health monitoring** — EMA-learned baseline continuously tracks each pump's normal chemical delivery; `getDoseEffectiveness()` returns 0–100 (last dose as a % of the learned baseline; 100 until baseline established after 3 doses); `ALARM_INEFFECTIVE` fires automatically when delivery drops below `setEfficiencyThreshold()` (default 20, active out of the box; pass 0 to disable); `getLastDoseSensorBefore()` / `getLastDoseSensorAfter()` expose raw before/after sensor averages for display or logging; check `hasDoseHistory()` first
 - **Adaptive proportional band** — optional self-learning mode: after each feedback cycle the library nudges the effective band up when the sensor overshot, down when it undershot, converging toward the pool's true chemical response; disabled by default, enabled with `enableAdaptivePB(nudgePct)` (1–25% per cycle); learned value is EEPROM-persistent per pump
 - **Pool volume scaling** — one call (`ApaDose::setPoolVolume(m3)`) scales pulse duration, rest period, and feedback timing for pools between 10–90 m³; reference is 20 m³; pools above ~30 m³ require this to converge to setpoint; disabled by default for backward compatibility; survives `factoryReset()`
@@ -29,6 +29,7 @@ Part of the **APA Devices** product family.
 - **Filtration interlock** — dosing blocked the instant the filter stops; a running dose halts immediately; no chemical ever injected into stagnant water
 - **External stop** — optional callback from any external system (maintenance mode, backwash, cover) blocks all dosing immediately; a mandatory 5-minute settling time applies after the signal clears before dosing resumes
 - **Chemical tank empty sensor** — optional dry-contact callback (`setTankEmptyCallback()`) fires `ALARM_TANK_EMPTY` the instant the tank runs dry; blocks dosing and priming until the tank is refilled and acknowledged; zero SRAM cost if unused
+- **Over-feed alarm (OFA)** — optional cumulative daily pump run-time limit, auto-scaled by pool volume; `setOFALimit(minutes)` sets the reference limit for a 20 m³ pool; fires a status warning at 70 % and `ALARM_OFA` (latching, ACK required) at 90 %; resets automatically at midnight; `getOFAPct()` returns today's consumption (0–100); disabled by default
 - **Setpoint range enforcement** — pH 6.8 – 7.8 and ORP 400 – 850 mV enforced on every write; out-of-range values rejected before reaching EEPROM
 - **Inter-pump chemical lockout** — 90-second enforced gap after any pump instance doses; prevents incompatible chemicals meeting at the same pipe inlet
 - **Startup blackout** — optional N-minute dosing hold after power-on (`blackoutMinutes` parameter in `begin()`); gives electrochemical sensors time to stabilize before the first dose decision; `isInStartupBlackout()` exposes the state for display
@@ -54,7 +55,7 @@ Part of the **APA Devices** product family.
 - **RTC scheduling** — optional: daily counter reset at midnight, dosing window by hour; library works fully without an RTC
 - **Non-blocking** — pure `millis()` state machine; zero `delay()` calls; safe to call every `loop()` iteration alongside any other code
 - **Universal hardware support** — AVR (Uno through Mega), ESP8266, ESP32, STM32 — same source, no `#ifdef` in user code
-- **Minimal footprint** — two-pump sketch: ~18 KB flash / 815 B RAM on Uno; ~300 B RAM per additional instance; 19 boolean flags packed into 3 bytes; pool volume and dead-band add 2 bytes SRAM total (shared across all instances) and 3 bytes EEPROM
+- **Minimal footprint** — two-pump sketch: ~19 KB flash / 847 B RAM on Uno; ~303 B RAM per additional instance; 20 boolean flags packed into 3 bytes; pool volume and dead-band add 2 bytes SRAM total (shared across all instances) and 3 bytes EEPROM
 - **No required dependencies** — the library itself needs only `<Arduino.h>` and `<EEPROM.h>`; RTClib (+ Adafruit BusIO) is required only when using an RTC for scheduling — not needed without one
 
 ---
@@ -154,27 +155,27 @@ threshold    25 %      50 %      75 %                   100 %
 Every automatic dose passes through six phases:
 
 ```
-  ┌──────────────────────────────────────────────────────────┐
-  │                                                          │
-  │  ① SAMPLE BEFORE     2 readings × 30 s apart             │
-  │        │             averaged → before-dose value        │
-  │        ▼                                                 │
-  │  ② CALCULATE PULSE                                       │
-  │        │   error %  =  |setpoint − reading| / band       │
-  │        │   PWM      ∝  error %   (proportional)          │
+  ┌─────────────────────────────────────────────────────────┐
+  │                                                         │
+  │  ① SAMPLE BEFORE     2 readings × 30 s apart           │
+  │        │             averaged → before-dose value       │
+  │        ▼                                               │
+  │  ② CALCULATE PULSE                                      │
+  │        │   error %  =  |setpoint − reading| / band      │
+  │        │   PWM      ∝  error %   (proportional)         │
   │        │   time     ∝  error %   (10 – 180 s)            │
-  │        │   rest     ∝  error %   (5 – 20 min)            │
-  │        ▼                                                 │
-  │  ③ RUN PUMP          analogWrite(PWM) for pulse time     │
-  │        │                                                 │
-  │        ▼                                                 │
-  │  ④ REST              chemical mixes into pool water      │
-  │        │             (5 – 20 min, proportional to dose)  │
-  │        ▼                                                 │
-  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart             │
-  │        │             averaged → after-dose value         │
-  │        ▼                                                 │
-  │  ⑥ EVALUATE FEEDBACK                                     │
+  │        │   rest     ∝  error %   (5 – 20 min)           │
+  │        ▼                                               │
+  │  ③ RUN PUMP          analogWrite(PWM) for pulse time    │
+  │        │                                               │
+  │        ▼                                               │
+  │  ④ REST              chemical mixes into pool water     │
+  │        │             (5 – 20 min, proportional to dose) │
+  │        ▼                                               │
+  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart           │
+  │        │             averaged → after-dose value        │
+  │        ▼                                               │
+  │  ⑥ EVALUATE FEEDBACK                                    │
   │        │  update EMA delivery baseline                   │
   │        ├─ EMA ratio < threshold? (default 20 %)          │
   │        │       └──────────────► ALARM_INEFFECTIVE        │
@@ -183,7 +184,7 @@ Every automatic dose passes through six phases:
   │        │     yes ──► failedAttempts=0; adaptive PB nudge │
   │        └─     no  ──► failedAttempts++; boost next dose  │
   │                       alarm after 3 (ALARM_INEFFECTIVE)  │
-  └────────────────────────┬─────────────────────────────────┘
+  └────────────────────────┬────────────────────────────────┘
                            │ repeat
                            ▼
 ```
