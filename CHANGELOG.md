@@ -5,6 +5,71 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.15.2] — 2026-05-24
+
+### Fixed
+
+- **OFA alarm: `acknowledgeAlarm()` now resets the daily counter immediately** — previously ACK
+  cleared the latch but left `_dailyPumpRunSec` unchanged, so `checkAlarmClearConditions()` could
+  not clear the alarm until midnight reset the counter; dosing remained blocked for the rest of the
+  day despite operator acknowledgment. Now `clearAlarm()` zeroes `_dailyPumpRunSec` and
+  `ofaWarningSent` when clearing `ALARM_OFA`, matching VADOS OFA behaviour (ACK = clear alarm +
+  reset counter; dosing resumes immediately). Midnight auto-reset is preserved as a fallback for
+  unattended systems.
+- **Manual doses excluded from OFA accumulation** — pump run time from `triggerManualDose()` was
+  incorrectly counted toward the daily OFA limit; manual doses are now exempt (only proportional
+  and shock dosing accumulate).
+- **Manual doses no longer blocked by `ALARM_OFA`** — `triggerManualDose()` was blocking all
+  manual operations when any latching alarm was active; manual doses are now permitted when only
+  `ALARM_OFA` is set, allowing operator intervention without requiring ACK first.
+- **Float absolute value: `abs()` replaced with `fabsf()`** — four calls to `abs()` on `float`
+  operands replaced with `fabsf()`, the unambiguous single-precision function; on AVR the `abs()`
+  macro can silently cast to `int` if the C++ overload from `<cmath>` loses resolution, producing
+  wrong results for sub-integer differences. No `#include` change needed — `fabsf` is available
+  through `Arduino.h` on all supported platforms. Flash cost: −106 bytes on Uno (more direct call).
+- **`setScheduledDose()` input clamping** — `hour > 23` is clamped to 23, `minute > 59` to 59,
+  `durationMs == 0` to 1000 ms (1 s minimum), and `intervalDays == 0` to 1 (already guarded);
+  previously out-of-range hour/minute values were stored silently and the scheduled dose never
+  fired, with no indication to the caller.
+- **`collectSample()` unused-parameter warning suppressed** — the `prefix` parameter is used only
+  inside `#ifdef APA_DOSE_DEBUG`; a `(void)prefix` statement added so release builds do not emit
+  an unused-variable warning on GCC/Clang strict builds.
+
+### Documentation
+
+- **API.md — `setOFALimit()` / `getOFAPct()` section added** — both functions were absent from
+  the API reference; new section documents parameters, 70 %/90 % thresholds, ACK reset behaviour,
+  what counts toward the limit, how to choose a starting value, and a code example.
+- **API.md — PWM pin requirement added to `setPumpRange()`** — board-specific PWM-capable pin
+  lists added (Uno/Nano: 3 5 6 9 10 11; Mega: 2–13, 44–46; ESP/STM32 notes).
+- **API.md — sensor smoothing requirement explained** — added note that the sensor callback must
+  return a stable, smoothed value; noisy raw readings cause false `ALARM_WRONG_DIRECTION` and
+  `ALARM_INEFFECTIVE` alarms; guidance on rolling average added.
+- **API.md — `ALARM_OFA` exception documented in `triggerManualDose()` table** — blocked-conditions
+  table and method comparison table updated to reflect that `ALARM_OFA` does not block manual doses.
+- **README — `ALARM_OFA` added to alarm recovery table** — was missing from the alarm reference table.
+- **README — OFA accumulation callout added after dosing cycle diagram** — explains that each dose
+  pulse contributes to the daily OFA counter, with pointer to Safety Systems for details.
+- **README — platform footprint table updated** — all five platform figures updated to reflect
+  3.15.2 build (Uno: 19 712 B flash / 847 B RAM).
+- **README — `extras/` folder added to Files tree** — `extras/apadose-banner.png` was referenced
+  in the banner but missing from the repository file listing.
+- **Examples — beginner clarity pass across 01, 02, 06**
+  - `setPoolVolume()`: explicit "if your pool is ≤ 30 m³, leave this commented out" guidance added
+    to examples 01, 02, and 06.
+  - EEPROM address block in example 02: `sizeof(ConfigData)` = 20 bytes stated; addresses for a
+    3rd and 4th pump shown explicitly.
+  - `begin()` first-boot comment: default values named (setpoint 7.4, band 1.0 pH / 700 mV, 100 mV).
+  - Tank empty callback: WHY comment added — dry-running a peristaltic pump damages the pump head.
+  - `setEfficiencyThreshold()`: EMA jargon replaced with plain-language explanation.
+  - `setCrossSettleMinutes()`: pH/ORP see-saw mechanism explained; Option J chlorine efficiency
+    context added.
+  - Inter-pump lockout note added to example 02 where two-pump users first encounter it.
+  - OFA setup block in example 06: "optional, leave commented" made explicit; how-to-choose
+    guidance and ACK-resets-immediately behaviour described.
+
+---
+
 ## [3.15.1] — 2026-05-24
 
 ### Fixed / Documentation
