@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.14.3"
+#define APA_DOSE_VERSION "3.15.0"
 #define APA_DOSE_VERSION_MAJOR 3
-#define APA_DOSE_VERSION_MINOR 14
-#define APA_DOSE_VERSION_PATCH 3
+#define APA_DOSE_VERSION_MINOR 15
+#define APA_DOSE_VERSION_PATCH 0
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -88,6 +88,11 @@ constexpr unsigned long FEEDBACK_PULSE_MAX_MS = ZONE4_PULSE_MS * 5UL / 3UL;
 
 // How long the filtration pump must be continuously off before a status warning fires.
 constexpr unsigned long FILTER_OFF_ALARM_MS = 30UL * 60UL * 1000UL;  // 30 minutes
+
+// Over-feed alarm (OFA) — cumulative daily pump run-time thresholds.
+// Reference limit set by setOFALimit() is for a 20 m³ pool and scales with setPoolVolume().
+constexpr uint8_t OFA_WARNING_PCT = 70;  // status warning fires, dosing continues
+constexpr uint8_t OFA_STOP_PCT    = 90;  // ALARM_OFA fires, dosing stops until ACK + midnight reset
 
 // Mandatory settling time after the external stop callback clears.
 // Prevents a dose from firing immediately when an operator toggles between filtration
@@ -171,7 +176,8 @@ enum ApaDoseAlarm {
   ALARM_INVALID_PARAM,    // Configuration value rejected (out of allowed range)
   ALARM_DAILY_LIMIT,      // maximum daily dose count reached — auto-clears at midnight / 24 h
   ALARM_SENSOR_FAULT,     // Sensor reading invalid (out of range / NaN) for >2 min, or no reading for >30 min
-  ALARM_TANK_EMPTY        // chemical tank empty — requires refill and acknowledgeAlarm()
+  ALARM_TANK_EMPTY,       // chemical tank empty — requires refill and acknowledgeAlarm()
+  ALARM_OFA               // cumulative daily pump run time exceeded 90% of setOFALimit() — requires acknowledgeAlarm()
 };
 
 // --- Internal structures ---
@@ -263,7 +269,7 @@ private:
   ApaDoseType      dosingType;
   ApaDoseDirection phDirection;
 
-  // Boolean state — 19 flags packed into 3 bytes (vs 19 bytes as individual bools)
+  // Boolean state — 20 flags packed into 3 bytes (vs 20 bytes as individual bools)
   struct {
     bool dosingActive        : 1;
     bool blackoutMessageSent : 1;
@@ -284,6 +290,7 @@ private:
     bool deadbandSatisfied   : 1;  // set when sensor retreats past exit threshold; cleared on re-entry
     bool phHoldSent          : 1;  // rate-limits "CL held: pH high" status message (Option J)
     bool settleHoldSent      : 1;  // rate-limits "CL held: settling" status message (Option A)
+    bool ofaWarningSent      : 1;  // rate-limits OFA 70% warning — reset at midnight
   } flags;
 
   // System state
@@ -343,6 +350,10 @@ private:
   float pumpFlowRateMlPerMin;  // pump output at max PWM; default 450 mL/min
   float dailyVolumeMl;         // accumulated volume today (resets at midnight with RTC)
   float lastDoseVolumeMl;      // volume of the last completed dose
+
+  // Over-feed alarm (OFA) — cumulative pump run-time limit per day
+  uint16_t _dailyPumpRunSec;  // accumulated pump-on time today (seconds); resets at midnight
+  uint8_t  _ofaLimitMin;      // reference limit at 20 m³ (minutes); 0 = disabled (default)
 
   // Scheduled pre-dose (C-pred) — requires RTC; inert when _schedDurationMs == 0
   uint8_t       _schedHour;          // 0-23
@@ -409,6 +420,7 @@ private:
   bool         validateConfiguration(const ConfigData& config);
   uint16_t     calculateChecksum(const ConfigData& config);
   void         resetToDefaults();
+  void         accumulateAndCheckOFA(unsigned long durationMs);
   void         manageShock();
   void         stopShock(const __FlashStringHelper* msg);
   static uint32_t toApproxHours(ApaDoseTime t);
@@ -496,6 +508,12 @@ public:
   void enableAdaptivePB(uint8_t pct);             // 0 = disable (resets learned value); 1–25 = nudge rate %
   void    setEfficiencyThreshold(uint8_t pct);    // 0 = alarm off; default 20 (active out of the box)
   uint8_t getEfficiencyThreshold()         const;
+  // Over-feed alarm — cumulative daily pump run-time limit, auto-scaled by setPoolVolume().
+  // referenceMinutes is the limit at the 20 m³ reference pool; 0 = disabled (default).
+  // Warning status fires at 70%, ALARM_OFA hard-stops dosing at 90%; requires acknowledgeAlarm().
+  // Dosing resumes automatically at midnight after ACK. Priming is exempt.
+  void    setOFALimit(uint8_t referenceMinutes = 30);
+  uint8_t getOFAPct() const;  // 0–100 % of today's scaled limit consumed; 0 when disabled
   void acknowledgeAlarm();
   void forceConfigurationSave();
   // Resets per-instance EEPROM fields to type-defaults, stops any active dose/prime/shock, clears alarm.
