@@ -273,16 +273,19 @@ void setup() {
   // phPump.setEfficiencyThreshold(20);  // default — set lower to tolerate more variance
   // clPump.setEfficiencyThreshold(20);  // independent per pump
 
-  // --- Over-feed alarm / OFA (call AFTER begin, optional; applies per pump) ---
-  // Protects against over-dosing by tracking total pump run time each day.
-  // setOFALimit(30) sets a 30-minute reference for a 20 m³ pool.
-  // If you called setPoolVolume() above the library scales this limit automatically —
-  // a 40 m³ pool gets a 60-minute limit, an 80 m³ pool gets 120 minutes, and so on.
-  // At 70 % of the limit: a status warning is sent (dosing continues, no ACK needed).
-  // At 90 %: ALARM_OFA fires and dosing stops. Press ACK to acknowledge the situation;
-  // the counter and alarm reset themselves at midnight so the next day starts clean.
-  // getOFAPct() returns today's usage (0–100 %) — show it on an LCD or serial dashboard.
-  // phPump.setOFALimit(30);   // uncomment and adjust — reference minutes for a 20 m³ pool
+  // --- Over-feed alarm / OFA (optional — leave commented out if you don't need it) ---
+  // Prevents a stuck sensor or misconfigured setpoint from running the pump all day.
+  // The limit is in pump RUN minutes per day, not wall-clock minutes.
+  // How to choose a value: for a 20 m³ pool a well-tuned system rarely needs more than
+  // 20–30 min/day of run time. Watch getOFAPct() over the first week — if it consistently
+  // hits 80–90 % while water chemistry is good, raise the limit; if it stays under 30 %,
+  // the limit is generous. For a 40 m³ pool use the same number — the library doubles
+  // it automatically when you call setPoolVolume(40).
+  // At 70 % of the limit: a status warning fires (dosing continues, no ACK needed).
+  // At 90 %: ALARM_OFA fires, dosing stops. Press ACK to reset the counter immediately
+  // and resume dosing. The counter also resets at midnight for unattended systems.
+  // getOFAPct() returns today's usage (0–100 %) — useful for a dashboard display.
+  // phPump.setOFALimit(30);   // uncomment and set — reference minutes for a 20 m³ pool
   // clPump.setOFALimit(30);   // set independently for each pump
 
   Serial.println(F("APA-Dose Alarm Management Demo"));
