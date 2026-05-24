@@ -12,7 +12,7 @@
 
 ApaDose phPump(PIN_PH_PUMP);
 
-float getpH()         { return phSensor.getPH(); }
+float getpH()         { return phSensor.getPH(); }   // must return a stable, smoothed reading — see note below
 bool  filterRunning() { return digitalRead(PIN_FILTER_RELAY) == HIGH; }
 
 void onAlarm(ApaDoseAlarm alarm, const char* msg) { Serial.println(msg); }
@@ -130,6 +130,8 @@ Calibrates the PWM range for this specific pump motor.
 - `maxPWM` — maximum allowed PWM, usually `255`
 - Default if not called: `minPWM = 50`, `maxPWM = 255`
 - `minPWM > maxPWM` is rejected silently.
+
+> **PWM pin required.** The pump pin passed to the constructor must support PWM (`analogWrite()`). On Arduino Uno/Nano these are pins **3, 5, 6, 9, 10, 11** — marked with a `~` on the board silkscreen. On Mega: 2–13 and 44–46. On ESP8266/ESP32 all GPIO pins support PWM. On STM32 consult your board's pinout. Connecting to a non-PWM pin will cause the pump to run at full speed or not at all.
 
 A 10% minimum floor above `minPWM` is applied to every dose to overcome pipe and hose resistance.
 
@@ -371,7 +373,7 @@ bool triggerPrime(unsigned long durationMs, uint8_t pwm = 0);          // 0 = us
 
 | Method | Speed | Respects alarms | Runs feedback | Counts as dose |
 |--------|-------|-----------------|---------------|----------------|
-| `triggerManualDose()` | `pumpMaxPWM` | Yes — blocked if alarm active | No | Yes |
+| `triggerManualDose()` | `pumpMaxPWM` | Yes — blocked by most alarms; `ALARM_OFA` is the exception (manual doses still permitted) | No | Yes |
 | `triggerPrime()` | configurable | No — bypasses all guards | No | No |
 
 `triggerManualDose()` returns `false` — and does nothing — when any of the following conditions are true:
@@ -379,7 +381,7 @@ bool triggerPrime(unsigned long durationMs, uint8_t pwm = 0);          // 0 = us
 | Condition | Guard |
 |-----------|-------|
 | A dose or prime is already running | `flags.dosingActive \|\| flags.primingActive` |
-| An alarm is active | `flags.alarmActive` |
+| An alarm is active — except `ALARM_OFA` | `flags.alarmActive && alarm != ALARM_OFA` |
 | `durationMs` is 0 | zero duration is rejected |
 | Daily dose limit reached | `maxDailyDoses > 0 && dailyDoseCount >= maxDailyDoses` |
 | Filter not running | only when a `FilterCallback` was registered in `begin()` |
@@ -415,15 +417,15 @@ Arms a recurring dose that fires automatically at the configured wall-clock time
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `hour` | `uint8_t` | — | Hour of day to fire (0–23). |
-| `minute` | `uint8_t` | — | Minute of hour to fire (0–59). |
-| `durationMs` | `unsigned long` | — | Dose duration in milliseconds. Clamped to `MAX_MANUAL_DOSE_MS` (5 min). Pass `0` to disable scheduling on this instance. |
+| `hour` | `uint8_t` | — | Hour of day to fire (0–23). Values above 23 are clamped to 23. |
+| `minute` | `uint8_t` | — | Minute of hour to fire (0–59). Values above 59 are clamped to 59. |
+| `durationMs` | `unsigned long` | — | Dose duration in milliseconds. Clamped to `MAX_MANUAL_DOSE_MS` (5 min). Values of 0 are clamped to 1000 ms (1 s minimum). |
 | `intervalDays` | `uint8_t` | `1` | Fire every N days. `1` = daily, `7` = weekly, `14` = fortnightly. `0` is treated as `1`. |
 | `threshold` | `float` | `NAN` | Condition for the dose to fire. `NAN` (default) = use the pump's own setpoint. `0.0` = always dose. Any finite value = explicit override. For `PH_MINUS` pumps: skips if reading ≤ threshold. For `PH_PLUS` / `DOSE_CL` pumps: skips if reading ≥ threshold. Ignored for sensor-less pumps. |
 
 The library tracks the interval with a day-of-month counter that ticks once per calendar day (from the RTC). The dose is suppressed on interval days without resetting the countdown.
 
-**All standard guards apply.** The scheduled dose calls `triggerManualDose()` internally, so it is blocked by: active alarm, filter off, external stop, tank empty, daily limit, inter-pump lockout, or a dose/prime already running. The daily dose counter is incremented when the dose fires.
+**All standard guards apply.** The scheduled dose calls `triggerManualDose()` internally, so it is blocked by: active alarm (except `ALARM_OFA`), filter off, external stop, tank empty, daily limit, inter-pump lockout, or a dose/prime already running. The daily dose counter is incremented when the dose fires.
 
 ```cpp
 // Algaecide every day at 09:00 for 30 s (sensor-less — threshold ignored, always doses)
@@ -687,6 +689,53 @@ void setup() {
 
 ---
 
+## Over-Feed Alarm (OFA)
+
+```cpp
+void    setOFALimit(uint8_t referenceMinutes);  // 0 = disabled (default); reference for 20 m³ pool
+uint8_t getOFAPct() const;                      // today's usage as 0–100 %; 0 if OFA disabled
+```
+
+Protects against chemical over-dosing by tracking how many minutes each pump has run today. Disabled by default — call `setOFALimit()` once in `setup()` to enable.
+
+**How it works:**
+
+`referenceMinutes` sets the daily pump run-time ceiling for the reference pool size (20 m³). If `ApaDose::setPoolVolume()` was called, the limit scales automatically with pool size — a 40 m³ pool gets twice the reference limit, an 80 m³ pool four times.
+
+| Threshold | Effect |
+|-----------|--------|
+| 70 % of limit | Status message via `onStatusMessage` — dosing continues normally |
+| 90 % of limit | `ALARM_OFA` fires — dosing stops until acknowledged |
+
+**Alarm recovery:** `acknowledgeAlarm()` resets the daily counter immediately and dosing resumes. At midnight (or after 24 h without an RTC) the counter resets automatically so unattended systems recover the next day without operator attention.
+
+**What counts toward OFA:** proportional dosing pulses and shock dosing.
+
+**What does NOT count:** `triggerManualDose()` (manual doses are intentional operator actions, always permitted even under `ALARM_OFA`) and `triggerPrime()`.
+
+**Choosing a starting limit:** 20–30 minutes is a typical starting point for a 20 m³ residential pool. Watch `getOFAPct()` over the first week — if it consistently reaches 80–90 % while pool chemistry is good, the limit is too tight; raise it. If it barely reaches 30 %, the limit is generous and you have headroom.
+
+```cpp
+void setup() {
+  phPump.begin(...);
+  clPump.begin(...);
+  phPump.setOFALimit(30);   // 30-min reference for 20 m³ — scales with setPoolVolume()
+  clPump.setOFALimit(30);   // set independently per pump
+}
+
+void loop() {
+  // Show today's OFA usage on a dashboard row (returns 0 when OFA is disabled)
+  uint8_t phOFA = phPump.getOFAPct();
+  if (phOFA > 0) {
+    Serial.print(F("pH OFA today: ")); Serial.print(phOFA); Serial.println(F("%"));
+  }
+}
+```
+
+`setOFALimit()` is per pump instance — set different limits for pH and chlorine if needed. Call after `begin()`.
+
+---
+
 ## Status Queries
 
 ```cpp
@@ -773,6 +822,8 @@ This prevents back-to-back injection of incompatible chemicals — for example, 
 ---
 
 ### Sensor value validation
+
+> **Sensor smoothing:** The library calls your sensor callback once per sample interval and uses the raw value returned. If your sensor library returns noisy, unfiltered readings, that noise is visible to the dosing logic — a momentary spike can trigger a dose, and erratic readings after a dose will confuse the feedback comparison, leading to false `ALARM_WRONG_DIRECTION` or `ALARM_INEFFECTIVE` alarms. Use a sensor library that applies internal averaging or exponential smoothing (such as APAPHX2), or apply smoothing inside your callback before returning the value. A simple rolling average over 5–10 readings is sufficient for most analog pH/ORP circuits.
 
 The library validates every sensor reading with `isfinite()`.
 
