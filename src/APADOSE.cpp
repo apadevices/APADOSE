@@ -303,7 +303,7 @@ void ApaDose::readSensors() {
     } else if (postShockCooldownEnd > 0 || postShockEndRTC.year != 0) {
       // Post-shock cooldown: safety band suppressed — ORP normalizing after shock.
     } else {
-      if (abs(setpoint - sensorValue) >= getEffectiveSafetyBand()) {
+      if (fabsf(setpoint - sensorValue) >= getEffectiveSafetyBand()) {
         char msg[20];
         snprintf(msg, sizeof(msg), "OOB:%.2f SP:%.2f",
                  (double)sensorValue, (double)setpoint);
@@ -488,6 +488,7 @@ void ApaDose::manageProportionalDosing() {
 // ---------------------------------------------------------------------------
 
 bool ApaDose::collectSample(unsigned long now, char prefix) {
+  (void)prefix;  // used only in APA_DOSE_DEBUG builds
   if (readSensor == nullptr) return false;
   float reading = readSensor();
   bool  valid   = isfinite(reading) && (isOrpProfile()
@@ -623,7 +624,7 @@ DosingPulse ApaDose::calculateProportionalPulse() {
   DosingPulse pulse = {0, 0, 0};
 
   float effectivePB  = (nudgePct > 0 && adaptedPB > 0.0f) ? adaptedPB : proportionalBand;
-  float sensorError  = abs(setpoint - sensorValue);
+  float sensorError  = fabsf(setpoint - sensorValue);
   float errorPercent = constrain((sensorError / effectivePB) * 100.0f, 0.0f, 100.0f);
 
   float effectiveRange = pumpMaxPWM - pumpMinPWM;
@@ -695,7 +696,8 @@ void ApaDose::stopDosingPulse() {
   lastDosingEnd      = now;
   lastAnyDoseEnd     = now;
 
-  accumulateAndCheckOFA(actualDuration);
+  if (!flags.manualDoseActive)
+    accumulateAndCheckOFA(actualDuration);
 }
 
 DosingPulse ApaDose::applyFeedbackCorrections(DosingPulse p) {
@@ -835,7 +837,7 @@ void ApaDose::checkSafetyConditions() {
   if (postShockCooldownEnd > 0 || postShockEndRTC.year != 0) return;
 
   float safetyBand  = getEffectiveSafetyBand();
-  float sensorError = abs(setpoint - sensorValue);
+  float sensorError = fabsf(setpoint - sensorValue);
 
   if (sensorError >= safetyBand) {
     char msg[20];
@@ -878,13 +880,13 @@ void ApaDose::checkAlarmClearConditions() {
   bool canClear = false;
   switch (alarm.currentAlarm) {
     case ALARM_SAFETY_BAND:
-      canClear = (abs(setpoint - sensorValue) < getEffectiveSafetyBand());
+      canClear = (fabsf(setpoint - sensorValue) < getEffectiveSafetyBand());
       break;
     case ALARM_SENSOR_FAULT:
       canClear = !flags.sensorValueBad && !flags.sensorStaleWarned;
       break;
     case ALARM_OFA:
-      canClear = (_dailyPumpRunSec == 0);  // auto-clears only when midnight resets the counter
+      canClear = true;  // ACK is sufficient; counter resets in clearAlarm()
       break;
     default:
       canClear = true;
@@ -895,6 +897,10 @@ void ApaDose::checkAlarmClearConditions() {
 }
 
 void ApaDose::clearAlarm() {
+  if (alarm.currentAlarm == ALARM_OFA) {
+    _dailyPumpRunSec     = 0;
+    flags.ofaWarningSent = false;
+  }
   ApaDoseAlarm previous  = alarm.currentAlarm;
   alarm.currentAlarm     = ALARM_NONE;
   flags.alarmActive      = false;
@@ -1156,9 +1162,9 @@ void ApaDose::setScheduledDose(uint8_t hour, uint8_t minute,
                                 unsigned long durationMs,
                                 uint8_t intervalDays,
                                 float   threshold) {
-  _schedHour          = hour;
-  _schedMinute        = minute;
-  _schedDurationMs    = durationMs;
+  _schedHour          = (hour   > 23) ? 23 : hour;
+  _schedMinute        = (minute > 59) ? 59 : minute;
+  _schedDurationMs    = (durationMs == 0) ? 1000UL : durationMs;
   _schedThreshold     = threshold;
   _schedIntervalDays  = (intervalDays == 0) ? 1 : intervalDays;
   _schedDaysRemaining = 0;
@@ -1208,7 +1214,8 @@ unsigned long ApaDose::getShockRemainingSeconds() const {
 // ---------------------------------------------------------------------------
 
 bool ApaDose::triggerManualDose(unsigned long durationMs, unsigned long restMs) {
-  if (flags.dosingActive || flags.primingActive || flags.alarmActive) return false;
+  if (flags.dosingActive || flags.primingActive) return false;
+  if (flags.alarmActive && alarm.currentAlarm != ALARM_OFA) return false;
   if (durationMs == 0) return false;
   if (maxDailyDoses > 0 && dailyDoseCount >= maxDailyDoses) return false;
   if (filterPumpRunning != nullptr && !filterPumpRunning()) return false;
