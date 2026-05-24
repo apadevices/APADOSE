@@ -7,7 +7,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.15.1** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.15.2** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
@@ -29,7 +29,7 @@ Part of the **APA Devices** product family.
 - **Filtration interlock** — dosing blocked the instant the filter stops; a running dose halts immediately; no chemical ever injected into stagnant water
 - **External stop** — optional callback from any external system (maintenance mode, backwash, cover) blocks all dosing immediately; a mandatory 5-minute settling time applies after the signal clears before dosing resumes
 - **Chemical tank empty sensor** — optional dry-contact callback (`setTankEmptyCallback()`) fires `ALARM_TANK_EMPTY` the instant the tank runs dry; blocks dosing and priming until the tank is refilled and acknowledged; zero SRAM cost if unused
-- **Over-feed alarm (OFA)** — protects against over-dosing by tracking how many minutes each pump runs each day; call `setOFALimit(30)` once in `setup()` to set a 30-minute reference for a 20 m³ pool — the library scales the limit automatically for other pool sizes if you called `setPoolVolume()`; at 70 % of the limit a status warning fires (dosing continues); at 90 % `ALARM_OFA` fires, dosing stops, and the ACK button is required — the counter resets itself automatically at midnight so the next day starts fresh; `getOFAPct()` returns today's usage (0–100 %) for a dashboard row; disabled by default
+- **Over-feed alarm (OFA)** — protects against over-dosing by tracking how many minutes each pump runs each day; call `setOFALimit(30)` once in `setup()` to set a 30-minute reference for a 20 m³ pool — the library scales the limit automatically for other pool sizes if you called `setPoolVolume()`; at 70 % of the limit a status warning fires (dosing continues); at 90 % `ALARM_OFA` fires, dosing stops, and the ACK button is required — pressing ACK resets the counter immediately so dosing can resume straight away; the counter also resets automatically at midnight so unattended systems recover on their own without operator attention; `getOFAPct()` returns today's usage (0–100 %) for a dashboard row; disabled by default
 - **Setpoint range enforcement** — pH 6.8 – 7.8 and ORP 400 – 850 mV enforced on every write; out-of-range values rejected before reaching EEPROM
 - **Inter-pump chemical lockout** — 90-second enforced gap after any pump instance doses; prevents incompatible chemicals meeting at the same pipe inlet
 - **Startup blackout** — optional N-minute dosing hold after power-on (`blackoutMinutes` parameter in `begin()`); gives electrochemical sensors time to stabilize before the first dose decision; `isInStartupBlackout()` exposes the state for display
@@ -38,7 +38,7 @@ Part of the **APA Devices** product family.
 - **1 to 4 independent pumps** — each instance is a full isolated state machine with its own dosing cycle, feedback loop, alarm state, and EEPROM block
 - **Sensor-less pump support** — pass `nullptr` as the sensor callback for flocculant or algaecide pumps; filtration interlock, daily limit, and priming all remain active
 - **Solenoid valve support** — set `min == max` in `setPumpRange()` for time-proportional on/off control; no other code changes needed
-- **Manual dosing** — `triggerManualDose()` for button or RTC-triggered doses; duration clamped to 5 minutes regardless of what is passed; all safety guards apply
+- **Manual dosing** — `triggerManualDose()` for button or RTC-triggered doses; duration clamped to 5 minutes regardless of what is passed; blocked by most safety guards — exception: `ALARM_OFA` does not block manual doses so the operator can intervene and add chemical without acknowledging the alarm first
 - **Scheduled dosing** — `setScheduledDose()` arms a recurring dose at a configurable wall-clock time; optional interval (daily/weekly/fortnightly) and sensor threshold to skip when reading is already in range; all safety guards apply; requires RTC
 - **Pipe priming** — `triggerPrime()` fills dry pipes on installation or after a container swap; bypasses all safety guards so it works even under an active alarm — except `ALARM_TANK_EMPTY` (no point running a dry pump); no rest period is imposed after priming — consecutive primes are allowed immediately (useful for long pipe runs requiring multiple passes)
 - **Shock / super-chlorination** — `triggerShock()` doses chlorine at full power until ORP reaches a target or a time ceiling; automatic early-stop margin, ORP rise check, inter-pump interlock, and post-shock safety band suppression all built-in; hobbyist and pro overloads available
@@ -191,6 +191,8 @@ Every automatic dose passes through six phases:
 
 > **Expected timing:** A full cycle takes **8 – 26 minutes** depending on how far the sensor is from setpoint — pre-sampling alone is 1 minute, pulse is 10 – 180 seconds, rest is 5 – 20 minutes, post-sampling is 1.5 minutes. Add any startup blackout on top. Seeing nothing on Serial for several minutes after boot is normal. Enable `APA_DOSE_DEBUG` in `platformio.ini` (`build_flags = -D APA_DOSE_DEBUG`) to print per-cycle progress and confirm the library is running.
 
+> **OFA accumulation:** each dose pulse in phase ③ adds its run time to a daily counter. When the optional over-feed alarm is enabled (`setOFALimit()`), this counter triggers a warning at 70 % and stops dosing at 90 % of the configured daily limit. See **Safety Systems → Over-feed alarm** below.
+
 ### Dosing zones
 
 | Error (% of band) | PWM output | Pulse duration | Rest period |
@@ -241,6 +243,7 @@ Alarms stop the pump immediately. Each alarm is reported through the `onAlarmTri
 | `ALARM_DAILY_LIMIT` | Max daily doses reached | Automatic at midnight (RTC) or after 24 h (millis) — no acknowledgment needed |
 | `ALARM_SENSOR_FAULT` | Invalid/out-of-range readings for 2 min, or no valid reading for 30 min | Automatic when sensor recovers — no acknowledgment needed |
 | `ALARM_TANK_EMPTY` | Tank empty callback returned `true` at dose-start time | Refill tank → `acknowledgeAlarm()` |
+| `ALARM_OFA` | Daily pump run-time reached 90 % of the `setOFALimit()` ceiling | `acknowledgeAlarm()` — resets the daily counter immediately; counter also resets automatically at midnight |
 | `ALARM_INVALID_PARAM` | Bad configuration value | Rejected silently — no alarm stays active |
 
 ### Receiving alarms via callback
@@ -666,11 +669,11 @@ Verified build sizes (`examples/basic/02_ph_and_cl` — two-pump sketch, release
 
 | Board | Flash | RAM |
 |-------|-------|-----|
-| Arduino Uno (ATmega328P) | 18,442 B / 32,256 B (57%) | 815 B / 2,048 B (40%) |
-| Arduino Mega 2560 | 19,498 B / 253,952 B (8%) | 815 B / 8,192 B (10%) |
-| ESP32-DevKit | 293,661 B / 1,310,720 B (22%) | 22,144 B / 327,680 B (7%) |
-| NodeMCU v2 (ESP8266) | 279,987 B / 1,044,464 B (27%) | 28,896 B / 81,920 B (35%) |
-| Blue Pill (STM32F103C8T6) | 30,064 B / 65,536 B (46%) | 2,700 B / 20,480 B (13%) |
+| Arduino Uno (ATmega328P) | 19,712 B / 32,256 B (61%) | 847 B / 2,048 B (41%) |
+| Arduino Mega 2560 | 20,768 B / 253,952 B (8%) | 847 B / 8,192 B (10%) |
+| ESP32-DevKit | 294,513 B / 1,310,720 B (22%) | 22,176 B / 327,680 B (7%) |
+| NodeMCU v2 (ESP8266) | 280,879 B / 1,044,464 B (27%) | 28,928 B / 81,920 B (35%) |
+| Blue Pill (STM32F103C8T6) | 30,824 B / 65,536 B (47%) | 2,732 B / 20,480 B (13%) |
 
 ESP flash totals include the full Arduino framework (WiFi stack, OS); the library itself adds a few KB on top of a bare sketch.
 
@@ -721,6 +724,8 @@ APA-DOSING_LIB/
 │   ├── intermediate/        03_serial_diagnostics · 04_lcd_display
 │   ├── advanced/            05_multi_pump  (RTC + shock pro API) · 06_alarm_management
 │   └── expert/              07–10  combined APAPHX2 + DS2482 sketches
+├── extras/
+│   └── apadose-banner.png   Repository banner image
 ├── LICENSE
 ├── keywords.txt
 ├── library.properties
