@@ -29,6 +29,10 @@
  *   ALARM_DAILY_LIMIT      — auto-clears at midnight (RTC) or after 24 h (millis fallback)
  *   ALARM_TANK_EMPTY       — requires ACK button; fires when setTankEmptyCallback() returns true
  *                              at dose-start time; dosing AND priming blocked until resolved
+ *   ALARM_OFA              — requires ACK button; fires at 90 % of the daily pump run-time limit
+ *                              set by setOFALimit(); a 70 % warning fires first (dosing continues);
+ *                              counter and alarm reset automatically at midnight — ACK resumes
+ *                              dosing the next day; disabled by default
  *   ALARM_SAFETY_BAND      — auto-clears when sensor returns to safe range
  *   ALARM_INVALID_PARAM    — never latches; silent rejection only
  *
@@ -75,7 +79,8 @@ bool  clTankEmpty()   { return digitalRead(PIN_CL_TANK) == LOW; }
 bool requiresAck(ApaDoseAlarm type) {
   return type == ALARM_WRONG_DIRECTION ||
          type == ALARM_INEFFECTIVE     ||
-         type == ALARM_TANK_EMPTY;
+         type == ALARM_TANK_EMPTY      ||
+         type == ALARM_OFA;
 }
 
 void logAlarm(const char* pumpName, ApaDoseAlarm type, const char* msg) {
@@ -140,6 +145,15 @@ void printDelivery(const char* name, ApaDose& pump) {
   }
 }
 
+// Print OFA usage for one pump — only shown when OFA is enabled (pct > 0 or active).
+void printOFA(const char* name, ApaDose& pump) {
+  uint8_t pct = pump.getOFAPct();
+  if (pct == 0) return;  // OFA disabled or no pump run time yet today
+  Serial.print(F("  ")); Serial.print(name);
+  Serial.print(F(" OFA: ")); Serial.print(pct);
+  Serial.println(F("% of today's limit"));
+}
+
 // --- Alarm status report ---
 void printAlarmStatus() {
   Serial.println(F("--- Alarm Status ---"));
@@ -153,6 +167,7 @@ void printAlarmStatus() {
     Serial.println(F("  pH  OK"));
   }
   printDelivery("pH ", phPump);
+  printOFA("pH ", phPump);
 
   if (clPump.isAlarmActive()) {
     Serial.print(F("  CL  ALARM : ")); Serial.println(clPump.getAlarmMessage());
@@ -163,6 +178,7 @@ void printAlarmStatus() {
     Serial.println(F("  CL  OK"));
   }
   printDelivery("CL ", clPump);
+  printOFA("CL ", clPump);
 
   Serial.println(F("--------------------"));
 }
@@ -256,6 +272,18 @@ void setup() {
   // Default is 20 (active out of the box after 3 warm-up doses). Pass 0 to disable the alarm.
   // phPump.setEfficiencyThreshold(20);  // default — set lower to tolerate more variance
   // clPump.setEfficiencyThreshold(20);  // independent per pump
+
+  // --- Over-feed alarm / OFA (call AFTER begin, optional; applies per pump) ---
+  // Protects against over-dosing by tracking total pump run time each day.
+  // setOFALimit(30) sets a 30-minute reference for a 20 m³ pool.
+  // If you called setPoolVolume() above the library scales this limit automatically —
+  // a 40 m³ pool gets a 60-minute limit, an 80 m³ pool gets 120 minutes, and so on.
+  // At 70 % of the limit: a status warning is sent (dosing continues, no ACK needed).
+  // At 90 %: ALARM_OFA fires and dosing stops. Press ACK to acknowledge the situation;
+  // the counter and alarm reset themselves at midnight so the next day starts clean.
+  // getOFAPct() returns today's usage (0–100 %) — show it on an LCD or serial dashboard.
+  // phPump.setOFALimit(30);   // uncomment and adjust — reference minutes for a 20 m³ pool
+  // clPump.setOFALimit(30);   // set independently for each pump
 
   Serial.println(F("APA-Dose Alarm Management Demo"));
   Serial.println(F("Short press ACK = ack first alarm | Long press (2s) = ack all"));
