@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.14.3
+ * Version: 3.15.0
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -73,6 +73,7 @@ ApaDose::ApaDose(uint8_t pumpPin, uint16_t eepromAddress)
     eepromBaseAddress(eepromAddress),
     lastDoseSensorBefore(0.0f), lastDoseSensorAfter(0.0f),
     pumpFlowRateMlPerMin(450.0f), dailyVolumeMl(0.0f), lastDoseVolumeMl(0.0f),
+    _dailyPumpRunSec(0), _ofaLimitMin(0),
     _schedHour(0), _schedMinute(0), _schedDurationMs(0),
     _schedThreshold(NAN), _schedIntervalDays(1),
     _schedDaysRemaining(0), _schedLastSeenDay(255),
@@ -423,21 +424,27 @@ void ApaDose::manageProportionalDosing() {
   if (readRTCTime != nullptr) {
     ApaDoseTime t = readRTCTime();
     if (t.day != lastKnownDay) {
-      dailyDoseCount = 0;
-      dailyVolumeMl  = 0.0f;
-      lastKnownDay   = t.day;
-      lastDailyReset = millis();
-      if (alarm.currentAlarm == ALARM_DAILY_LIMIT) clearAlarm();
+      dailyDoseCount       = 0;
+      dailyVolumeMl        = 0.0f;
+      _dailyPumpRunSec     = 0;
+      flags.ofaWarningSent = false;
+      lastKnownDay         = t.day;
+      lastDailyReset       = millis();
+      if (alarm.currentAlarm == ALARM_DAILY_LIMIT ||
+          alarm.currentAlarm == ALARM_OFA) clearAlarm();
     }
     flags.outsideDosingWindow = flags.dosingWindowEnabled &&
                                 (t.hour < dosingWindowStart || t.hour >= dosingWindowEnd);
     if (flags.outsideDosingWindow) return;
   } else {
     if (millis() - lastDailyReset >= 24UL * 60UL * 60UL * 1000UL) {
-      dailyDoseCount = 0;
-      dailyVolumeMl  = 0.0f;
-      lastDailyReset = millis();
-      if (alarm.currentAlarm == ALARM_DAILY_LIMIT) clearAlarm();
+      dailyDoseCount       = 0;
+      dailyVolumeMl        = 0.0f;
+      _dailyPumpRunSec     = 0;
+      flags.ofaWarningSent = false;
+      lastDailyReset       = millis();
+      if (alarm.currentAlarm == ALARM_DAILY_LIMIT ||
+          alarm.currentAlarm == ALARM_OFA) clearAlarm();
     }
   }
 
@@ -687,6 +694,8 @@ void ApaDose::stopDosingPulse() {
   flags.dosingActive = false;
   lastDosingEnd      = now;
   lastAnyDoseEnd     = now;
+
+  accumulateAndCheckOFA(actualDuration);
 }
 
 DosingPulse ApaDose::applyFeedbackCorrections(DosingPulse p) {
@@ -854,7 +863,8 @@ void ApaDose::triggerAlarm(ApaDoseAlarm type, const char* message) {
   alarm.alarmMessage[sizeof(alarm.alarmMessage) - 1] = '\0';
   flags.alarmNeedsAck = (type == ALARM_WRONG_DIRECTION ||
                          type == ALARM_INEFFECTIVE    ||
-                         type == ALARM_TANK_EMPTY);
+                         type == ALARM_TANK_EMPTY     ||
+                         type == ALARM_OFA);
 
   feedback.failedAttempts = 0;
   feedback.phase          = FB_IDLE;
@@ -872,6 +882,9 @@ void ApaDose::checkAlarmClearConditions() {
       break;
     case ALARM_SENSOR_FAULT:
       canClear = !flags.sensorValueBad && !flags.sensorStaleWarned;
+      break;
+    case ALARM_OFA:
+      canClear = (_dailyPumpRunSec == 0);  // auto-clears only when midnight resets the counter
       break;
     default:
       canClear = true;
@@ -902,6 +915,7 @@ const char* ApaDose::getAlarmName(ApaDoseAlarm type) {
     case ALARM_DAILY_LIMIT:     return "Daily limit";
     case ALARM_SENSOR_FAULT:    return "Sensor fault";
     case ALARM_TANK_EMPTY:      return "Tank empty";
+    case ALARM_OFA:             return "OFA limit";
     default:                    return "Unknown";
   }
 }
@@ -1112,6 +1126,8 @@ void ApaDose::stopShock(const __FlashStringHelper* msg) {
   flags.shockActive        = false;
   ApaDose::shockModeActive = false;
 
+  accumulateAndCheckOFA(elapsed);
+
   if (readRTCTime != nullptr) {
     postShockEndRTC      = readRTCTime();  // shock-end wall clock; cooldown checked via toApproxHours
     postShockCooldownEnd = 0;
@@ -1269,6 +1285,44 @@ void ApaDose::setEfficiencyThreshold(uint8_t pct) {
   _efficiencyThresholdPct = pct;
 }
 uint8_t ApaDose::getEfficiencyThreshold() const { return _efficiencyThresholdPct; }
+
+void ApaDose::setOFALimit(uint8_t referenceMinutes) {
+  _ofaLimitMin         = referenceMinutes;
+  flags.ofaWarningSent = false;
+}
+
+uint8_t ApaDose::getOFAPct() const {
+  if (_ofaLimitMin == 0) return 0;
+  uint32_t limitSec = (s_poolVolume == 0)
+    ? (uint32_t)_ofaLimitMin * 60U
+    : (uint32_t)_ofaLimitMin * 60U * s_poolVolume / REFERENCE_VOLUME_M3;
+  if (limitSec == 0) return 0;
+  return (uint8_t)min(100UL, (uint32_t)_dailyPumpRunSec * 100UL / limitSec);
+}
+
+void ApaDose::accumulateAndCheckOFA(unsigned long durationMs) {
+  if (_ofaLimitMin == 0) return;
+
+  uint16_t addSec      = (uint16_t)min(durationMs / 1000UL, (unsigned long)65535U);
+  uint32_t newTotal    = (uint32_t)_dailyPumpRunSec + addSec;
+  _dailyPumpRunSec     = (newTotal > 65535U) ? 65535U : (uint16_t)newTotal;
+
+  uint32_t limitSec = (s_poolVolume == 0)
+    ? (uint32_t)_ofaLimitMin * 60U
+    : (uint32_t)_ofaLimitMin * 60U * s_poolVolume / REFERENCE_VOLUME_M3;
+  if (limitSec == 0) return;
+
+  uint8_t pct = (uint8_t)min(100UL, (uint32_t)_dailyPumpRunSec * 100UL / limitSec);
+  if (pct >= OFA_STOP_PCT) {
+    char buf[20];
+    FSTR_TO_BUF(buf, F("OFA:limit reached"), 19);
+    buf[19] = '\0';
+    triggerAlarm(ALARM_OFA, buf);
+  } else if (pct >= OFA_WARNING_PCT && !flags.ofaWarningSent) {
+    sendStatus(onStatusMessage, F("OFA:70% warning"));
+    flags.ofaWarningSent = true;
+  }
+}
 
 unsigned long ApaDose::getSecondsUntilNextDose() const {
   if (lastDosingEnd == 0) return 0;
