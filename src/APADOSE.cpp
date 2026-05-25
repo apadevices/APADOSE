@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.16.1
+ * Version: 3.16.2
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -1407,7 +1407,7 @@ void ApaDose::accumulateAndCheckDOFA(unsigned long durationMs) {
 }
 
 void ApaDose::setDOFAAdaptDays(uint8_t days) {
-  _dofaAdaptDays = constrain(days, 3, 30);
+  _dofaAdaptDays = constrain(days, 3, 14);
 }
 
 void ApaDose::disableDOFA() {
