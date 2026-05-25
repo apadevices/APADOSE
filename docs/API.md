@@ -1,6 +1,6 @@
-# APA-Dose Library — API Reference
+﻿# APA-Dose Library — API Reference
 
-**Version**: 3.16.3  
+**Version**: 3.16.4  
 **File**: `APADOSE.h` / `APADOSE.cpp`
 
 ---
@@ -1122,7 +1122,7 @@ dead-band width W = 10% × 1.0 = 0.10 pH
 don't dose ◄──── W ────►│◄──── W ──── alarm fires after 30 min
                         7.4
          7.30          7.40          7.50
-     ALARM_OVER_SP      SP       (dead-band entry)
+     (dead-band entry)  SP       ALARM_OVER_SP
 ```
 
 When dead-band is disabled (`W = 0`), any persistent over-setpoint reading triggers the alarm — the threshold sits exactly at the setpoint.
