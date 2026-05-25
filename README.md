@@ -7,7 +7,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.15.2** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.16.1** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
@@ -30,6 +30,7 @@ Part of the **APA Devices** product family.
 - **External stop** — optional callback from any external system (maintenance mode, backwash, cover) blocks all dosing immediately; a mandatory 5-minute settling time applies after the signal clears before dosing resumes
 - **Chemical tank empty sensor** — optional dry-contact callback (`setTankEmptyCallback()`) fires `ALARM_TANK_EMPTY` the instant the tank runs dry; blocks dosing and priming until the tank is refilled and acknowledged; zero SRAM cost if unused
 - **Over-feed alarm (OFA)** — protects against over-dosing by tracking how many minutes each pump runs each day; call `setOFALimit(30)` once in `setup()` to set a 30-minute reference for a 20 m³ pool — the library scales the limit automatically for other pool sizes if you called `setPoolVolume()`; at 70 % of the limit a status warning fires (dosing continues); at 90 % `ALARM_OFA` fires, dosing stops, and the ACK button is required — pressing ACK resets the counter immediately so dosing can resume straight away; the counter also resets automatically at midnight so unattended systems recover on their own without operator attention; `getOFAPct()` returns today's usage (0–100 %) for a dashboard row; disabled by default
+- **Dynamic OFA (dOFA)** — self-learning over-feed protection; always active, zero configuration needed; dOFA learns what a normal dosing day looks like for THIS pool and fires `ALARM_OFA` when today's proportional run time exceeds 2× the learned baseline (warning status at 1.5×); no limit to guess — the library builds it automatically from real daily usage; both dOFA and fixed OFA coexist independently, whichever fires first controls; baseline is EMA-averaged over the last N days (default 10, adjustable 3–30 via `setDOFAAdaptDays()`), persisted to EEPROM at midnight and survives power cycles; warm-up is ~3–5 dosing days before the baseline is ready — during warm-up the pool is protected by `ALARM_INEFFECTIVE`, `ALARM_WRONG_DIRECTION`, `ALARM_SAFETY_BAND`, the daily dose limit, and optional fixed OFA; `isDOFALearning()` returns `true` during warm-up; `getDOFAPct()` returns today's proportional run as a % of the learned baseline; call `resetDOFA()` at spring opening to restart learning after a seasonal shutdown; sensor-less pumps are inert (proportional dosing never runs, counter stays 0)
 - **Setpoint range enforcement** — pH 6.8 – 7.8 and ORP 400 – 850 mV enforced on every write; out-of-range values rejected before reaching EEPROM
 - **Inter-pump chemical lockout** — 90-second enforced gap after any pump instance doses; prevents incompatible chemicals meeting at the same pipe inlet
 - **Startup blackout** — optional N-minute dosing hold after power-on (`blackoutMinutes` parameter in `begin()`); gives electrochemical sensors time to stabilize before the first dose decision; `isInStartupBlackout()` exposes the state for display
@@ -55,7 +56,7 @@ Part of the **APA Devices** product family.
 - **RTC scheduling** — optional: daily counter reset at midnight, dosing window by hour; library works fully without an RTC
 - **Non-blocking** — pure `millis()` state machine; zero `delay()` calls; safe to call every `loop()` iteration alongside any other code
 - **Universal hardware support** — AVR (Uno through Mega), ESP8266, ESP32, STM32 — same source, no `#ifdef` in user code
-- **Minimal footprint** — two-pump sketch: ~19 KB flash / 847 B RAM on Uno; ~303 B RAM per additional instance; 20 boolean flags packed into 3 bytes; pool volume and dead-band add 2 bytes SRAM total (shared across all instances) and 3 bytes EEPROM
+- **Minimal footprint** — two-pump sketch: ~20 KB flash / ~857 B RAM on Uno; ~303 B RAM per additional instance; 22 boolean flags packed into 3 bytes; dOFA adds 5 B SRAM + 2 B EEPROM per instance (zero if unused after link-time optimization); pool volume and dead-band add 2 bytes SRAM total (shared across all instances) and 3 bytes EEPROM
 - **No required dependencies** — the library itself needs only `<Arduino.h>` and `<EEPROM.h>`; RTClib (+ Adafruit BusIO) is required only when using an RTC for scheduling — not needed without one
 
 ---
@@ -155,27 +156,27 @@ threshold    25 %      50 %      75 %                   100 %
 Every automatic dose passes through six phases:
 
 ```
-  ┌──────────────────────────────────────────────────────────┐
-  │                                                          │
-  │  ① SAMPLE BEFORE     2 readings × 30 s apart             │
-  │        │             averaged → before-dose value        │
-  │        ▼                                                 │
-  │  ② CALCULATE PULSE                                       │
-  │        │   error %  =  |setpoint − reading| / band       │
-  │        │   PWM      ∝  error %   (proportional)          │
+  ┌─────────────────────────────────────────────────────────┐
+  │                                                         │
+  │  ① SAMPLE BEFORE     2 readings × 30 s apart           │
+  │        │             averaged → before-dose value       │
+  │        ▼                                               │
+  │  ② CALCULATE PULSE                                      │
+  │        │   error %  =  |setpoint − reading| / band      │
+  │        │   PWM      ∝  error %   (proportional)         │
   │        │   time     ∝  error %   (10 – 180 s)            │
-  │        │   rest     ∝  error %   (5 – 20 min)            │
-  │        ▼                                                 │
-  │  ③ RUN PUMP          analogWrite(PWM) for pulse time     │
-  │        │                                                 │
-  │        ▼                                                 │
-  │  ④ REST              chemical mixes into pool water      │
-  │        │             (5 – 20 min, proportional to dose)  │
-  │        ▼                                                 │
-  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart             │
-  │        │             averaged → after-dose value         │
-  │        ▼                                                 │
-  │  ⑥ EVALUATE FEEDBACK                                     │
+  │        │   rest     ∝  error %   (5 – 20 min)           │
+  │        ▼                                               │
+  │  ③ RUN PUMP          analogWrite(PWM) for pulse time    │
+  │        │                                               │
+  │        ▼                                               │
+  │  ④ REST              chemical mixes into pool water     │
+  │        │             (5 – 20 min, proportional to dose) │
+  │        ▼                                               │
+  │  ⑤ SAMPLE AFTER      3 readings × 30 s apart           │
+  │        │             averaged → after-dose value        │
+  │        ▼                                               │
+  │  ⑥ EVALUATE FEEDBACK                                    │
   │        │  update EMA delivery baseline                   │
   │        ├─ EMA ratio < threshold? (default 20 %)          │
   │        │       └──────────────► ALARM_INEFFECTIVE        │
@@ -184,14 +185,14 @@ Every automatic dose passes through six phases:
   │        │     yes ──► failedAttempts=0; adaptive PB nudge │
   │        └─     no  ──► failedAttempts++; boost next dose  │
   │                       alarm after 3 (ALARM_INEFFECTIVE)  │
-  └────────────────────────┬─────────────────────────────────┘
+  └────────────────────────┬────────────────────────────────┘
                            │ repeat
                            ▼
 ```
 
 > **Expected timing:** A full cycle takes **8 – 26 minutes** depending on how far the sensor is from setpoint — pre-sampling alone is 1 minute, pulse is 10 – 180 seconds, rest is 5 – 20 minutes, post-sampling is 1.5 minutes. Add any startup blackout on top. Seeing nothing on Serial for several minutes after boot is normal. Enable `APA_DOSE_DEBUG` in `platformio.ini` (`build_flags = -D APA_DOSE_DEBUG`) to print per-cycle progress and confirm the library is running.
 
-> **OFA accumulation:** each dose pulse in phase ③ adds its run time to a daily counter. When the optional over-feed alarm is enabled (`setOFALimit()`), this counter triggers a warning at 70 % and stops dosing at 90 % of the configured daily limit. See **Safety Systems → Over-feed alarm** below.
+> **OFA accumulation:** each proportional dose pulse in phase ③ adds its run time to two independent daily counters. The fixed OFA counter (optional, `setOFALimit()`) triggers a warning at 70 % and stops dosing at 90 % of the configured limit. The dynamic OFA counter (dOFA, always active) builds a self-learned baseline and fires when today exceeds 2× normal. Manual doses and shock are excluded from the dOFA counter. See **Safety Systems → Over-feed alarm** and **Dynamic OFA** below.
 
 ### Dosing zones
 
@@ -243,7 +244,7 @@ Alarms stop the pump immediately. Each alarm is reported through the `onAlarmTri
 | `ALARM_DAILY_LIMIT` | Max daily doses reached | Automatic at midnight (RTC) or after 24 h (millis) — no acknowledgment needed |
 | `ALARM_SENSOR_FAULT` | Invalid/out-of-range readings for 2 min, or no valid reading for 30 min | Automatic when sensor recovers — no acknowledgment needed |
 | `ALARM_TANK_EMPTY` | Tank empty callback returned `true` at dose-start time | Refill tank → `acknowledgeAlarm()` |
-| `ALARM_OFA` | Daily pump run-time reached 90 % of the `setOFALimit()` ceiling | `acknowledgeAlarm()` — resets the daily counter immediately; counter also resets automatically at midnight |
+| `ALARM_OFA` | Daily proportional run-time reached 90 % of the `setOFALimit()` ceiling **or** 2× the dOFA learned baseline | `acknowledgeAlarm()` — resets both daily counters immediately; counters also reset automatically at midnight |
 | `ALARM_INVALID_PARAM` | Bad configuration value | Rejected silently — no alarm stays active |
 
 ### Receiving alarms via callback
@@ -669,11 +670,11 @@ Verified build sizes (`examples/basic/02_ph_and_cl` — two-pump sketch, release
 
 | Board | Flash | RAM |
 |-------|-------|-----|
-| Arduino Uno (ATmega328P) | 19,712 B / 32,256 B (61%) | 847 B / 2,048 B (41%) |
-| Arduino Mega 2560 | 20,768 B / 253,952 B (8%) | 847 B / 8,192 B (10%) |
-| ESP32-DevKit | 294,513 B / 1,310,720 B (22%) | 22,176 B / 327,680 B (7%) |
-| NodeMCU v2 (ESP8266) | 280,879 B / 1,044,464 B (27%) | 28,928 B / 81,920 B (35%) |
-| Blue Pill (STM32F103C8T6) | 30,824 B / 65,536 B (47%) | 2,732 B / 20,480 B (13%) |
+| Arduino Uno (ATmega328P) | 20,366 B / 32,256 B (63%) | 857 B / 2,048 B (42%) |
+| Arduino Mega 2560 | 21,422 B / 253,952 B (8%) | 857 B / 8,192 B (10%) |
+| ESP32-DevKit | 294,973 B / 1,310,720 B (23%) | 22,184 B / 327,680 B (7%) |
+| NodeMCU v2 (ESP8266) | 281,327 B / 1,044,464 B (27%) | 28,936 B / 81,920 B (35%) |
+| Blue Pill (STM32F103C8T6) | 31,172 B / 65,536 B (48%) | 2,740 B / 20,480 B (13%) |
 
 ESP flash totals include the full Arduino framework (WiFi stack, OS); the library itself adds a few KB on top of a bare sketch.
 
@@ -748,3 +749,23 @@ APA-DOSING_LIB/
 
 **Author:** kecup@vazac.eu  
 **© APA Devices**
+
+---
+
+## License
+
+APA-Dose is released under a **dual license**:
+
+**Non-commercial use — free**  
+Personal, private, educational, and hobby use is permitted free of charge. See the [LICENSE](LICENSE) file for full terms.
+
+**Commercial use — license required**  
+Using this library in commercial products or services is strictly prohibited without a separate written Commercial License. This includes — but is not limited to:
+
+- Selling hardware with APA-Dose pre-installed or bundled
+- Commercial pool maintenance or chemical dosing services that rely on this library
+- Integrating this library into products or systems sold to third parties
+
+For commercial licensing, custom integration, volume pricing, or OEM arrangements, please contact:
+
+**jaroslav@vazac.eu**
