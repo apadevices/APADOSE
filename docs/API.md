@@ -1,6 +1,6 @@
 # APA-Dose Library — API Reference
 
-**Version**: 3.16.2  
+**Version**: 3.16.3  
 **File**: `APADOSE.h` / `APADOSE.cpp`
 
 ---
@@ -1084,24 +1084,56 @@ clPump.begin(getORP, filterRunning, DOSE_CL, CL_PLUS, 20);
 ```cpp
 enum ApaDoseAlarm {
   ALARM_NONE,
-  ALARM_WRONG_DIRECTION,  // sensor moved opposite way 3×  — wrong chemical?
-  ALARM_INEFFECTIVE,      // no change after 3 dosing attempts
+  ALARM_WRONG_DIRECTION,  // sensor moved opposite way 3× — wrong chemical?
+  ALARM_INEFFECTIVE,      // EMA ratio below threshold, no change after 3 attempts, or no ORP rise during shock
   ALARM_SAFETY_BAND,      // sensor beyond setpoint ± safety band
   ALARM_INVALID_PARAM,    // configuration value out of valid range
   ALARM_DAILY_LIMIT,      // maximum daily dose count reached — auto-clears at midnight / 24 h
-  ALARM_SENSOR_FAULT      // sensor reading out of range or NaN for >2 min, or no reading for >30 min
+  ALARM_SENSOR_FAULT,     // sensor reading out of range or NaN for >2 min, or no reading for >30 min
+  ALARM_TANK_EMPTY,       // chemical tank empty callback returned true — latching, requires ACK
+  ALARM_OFA,              // cumulative daily pump run time exceeded 90% of fixed limit or 2× dOFA baseline
+  ALARM_OVER_SETPOINT     // sensor on wrong side of setpoint for >30 min — non-latching, auto-clears
 };
 ```
 
 ### Alarm behavior
 
-| Alarm | Trigger | Recovery |
-|-------|---------|----------|
-| `ALARM_WRONG_DIRECTION` | sensor moves opposite way on 3 consecutive cycles | Fix chemical or wiring → `acknowledgeAlarm()` |
-| `ALARM_INEFFECTIVE` | EMA delivery ratio drops below threshold (default 20%), 3 consecutive failed feedback cycles, or ORP did not rise during shock | Fix pump or supply → `acknowledgeAlarm()` |
-| `ALARM_SAFETY_BAND` | sensor beyond `min(band × 1.5, hardCap)` from setpoint | Automatic when sensor recovers |
-| `ALARM_INVALID_PARAM` | bad configuration value | Automatic rejection, no change applied |
-| `ALARM_DAILY_LIMIT` | `maxDailyDoses` reached | Automatic at midnight (RTC) or after 24 h (millis) |
+| Alarm | Latching | Trigger | Recovery |
+|-------|----------|---------|----------|
+| `ALARM_WRONG_DIRECTION` | Yes | Sensor moves opposite way on 3 consecutive cycles | Fix chemical or wiring → `acknowledgeAlarm()` |
+| `ALARM_INEFFECTIVE` | Yes | EMA delivery ratio drops below threshold (default 20%), 3 consecutive failed feedback cycles, or ORP did not rise during shock | Fix pump or supply → `acknowledgeAlarm()` |
+| `ALARM_SAFETY_BAND` | No | Sensor beyond `min(band × 1.5, hardCap)` from setpoint | Automatic when sensor recovers |
+| `ALARM_INVALID_PARAM` | No | Bad configuration value | Automatic rejection, no change applied |
+| `ALARM_DAILY_LIMIT` | No | `maxDailyDoses` reached | Automatic at midnight (RTC) or after 24 h (millis) |
+| `ALARM_SENSOR_FAULT` | No | Sensor reading out-of-range or NaN for >2 min, or no valid reading for >30 min | Automatic when sensor recovers |
+| `ALARM_TANK_EMPTY` | Yes | Tank empty callback returned `true` at dose-start time | Refill tank → `acknowledgeAlarm()` |
+| `ALARM_OFA` | Yes | Daily proportional run time reached 90 % of fixed OFA limit or 2× dOFA learned baseline | `acknowledgeAlarm()` — resets both daily counters immediately; also resets automatically at midnight |
+| `ALARM_OVER_SETPOINT` | No | Sensor stays on wrong side of setpoint for >30 min | Automatic when sensor returns to dosing zone — no ACK needed |
+
+### Over-setpoint protection (`ALARM_OVER_SETPOINT`)
+
+Fires when the sensor has been on the wrong side of setpoint long enough that operator attention is warranted. Dosing has already stopped (the error is on the wrong side) so this is a notification alarm, not an emergency stop.
+
+**Dead-band correlation:** when a dead-band is configured, the same width `W` that suppresses dosing near setpoint is also applied on the opposite side as the alarm threshold. The diagram below shows a pH-PLUS pump (setpoint 7.4, band 1.0, dead-band 10%):
+
+```
+dead-band width W = 10% × 1.0 = 0.10 pH
+
+don't dose ◄──── W ────►│◄──── W ──── alarm fires after 30 min
+                        7.4
+         7.30          7.40          7.50
+     ALARM_OVER_SP      SP       (dead-band entry)
+```
+
+When dead-band is disabled (`W = 0`), any persistent over-setpoint reading triggers the alarm — the threshold sits exactly at the setpoint.
+
+**Behaviour details:**
+- Timer starts on the first reading past the mirror threshold; resets to zero any time the reading returns within the zone
+- Alarm fires after `OVER_SETPOINT_DELAY_MS` (30 min) of uninterrupted over-setpoint condition
+- Non-latching: clears automatically on the next 10-second sensor read once the condition resolves — no `acknowledgeAlarm()` required
+- When `shouldStartDosing()` becomes true again (reading returns to dosing zone), the timer and `overSetpointFired` flag are both cleared before the new dose starts
+- Message string: `"OverSP:too high"` (raising pump — PH_PLUS, CL) or `"OverSP:too low"` (PH_MINUS)
+- SRAM cost: 4 bytes per instance (`unsigned long _overSetpointSince`) + 1 bit in the flags bitfield
 
 **`ALARM_WRONG_DIRECTION` on high-bather-load days:** On a heavily used pool, chlorine demand can exceed what each dose delivers — ORP may drop after dosing even though the correct chemical is present. The 3-consecutive-cycle threshold (with ~20-minute rest periods between each) gives roughly one hour of tolerance before the alarm fires, which covers most short demand spikes. If this alarm fires on a busy day:
 
