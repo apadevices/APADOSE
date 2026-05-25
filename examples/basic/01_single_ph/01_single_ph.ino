@@ -109,6 +109,27 @@ void setup() {
   // Typical cause: empty chemical tank, blocked tube, or pump head failure.
   // Default is 20 % (active automatically after warm-up). Pass 0 to disable.
   // phPump.setEfficiencyThreshold(20);  // default — shown here for clarity
+
+  // --- Dynamic OFA / dOFA (always on — zero config needed) ---
+  // dOFA learns how much proportional pump run time is normal for THIS pool and fires
+  // ALARM_OFA if today's run time exceeds 2× the learned baseline (warning at 1.5×).
+  // No limit to set, no threshold to guess — the library figures it out from real usage.
+  // Works alongside fixed OFA (setOFALimit): whichever fires first controls. Both are independent.
+  //
+  // Warm-up: baseline seeds at midnight of the first qualifying day (≥5 min proportional run).
+  // isDOFALearning() returns true until then — typically day 2. During that first day the pool
+  // is protected by ALARM_INEFFECTIVE, ALARM_WRONG_DIRECTION, ALARM_SAFETY_BAND, and the daily dose limit.
+  //
+  // getDOFAPct() — today's proportional run as % of the learned baseline.
+  //   Returns 0 until the first qualifying day. A reading of 0 on the first dosing day is normal —
+  //   the baseline seeds at midnight; it is not a fault.
+  //
+  // resetDOFA()         — call once at spring opening after a seasonal shutdown; dOFA
+  //                        re-learns for the current season. Leave commented on first install.
+  // setDOFAAdaptDays(5) — speed up learning (default 10 days, range 3–14).
+  // disableDOFA()       — only needed for sensor-less pumps (e.g. algaecide); for a
+  //                        standard pH pump leave this out — dOFA is inactive on
+  //                        sensor-less pumps automatically.
 }
 
 void loop() {
@@ -118,13 +139,25 @@ void loop() {
   // Polling guarantees the LED stays in sync even if the callback was missed.
   digitalWrite(PIN_ALARM_LED, phPump.isAlarmActive() ? HIGH : LOW);
 
-  // ACK button clears latching alarms: WRONG_DIRECTION, INEFFECTIVE, TANK_EMPTY.
-  // ALARM_DAILY_LIMIT auto-clears at midnight when the daily counter resets — no ACK needed.
-  // ALARM_INEFFECTIVE can fire two ways: sensor showed no meaningful response on 3
-  // consecutive doses (cold-start), or the last dose fell below the EMA delivery
-  // baseline (default 20% threshold — see setEfficiencyThreshold() in setup above).
-  // Call getDoseEffectiveness() to read the last dose as a % of the learned baseline.
-  // ALARM_SAFETY_BAND clears automatically — no button needed.
+  // ACK button clears latching alarms: WRONG_DIRECTION, INEFFECTIVE, TANK_EMPTY, OFA.
+  // ALARM_DAILY_LIMIT and ALARM_SAFETY_BAND auto-clear — no ACK needed.
+  // ALARM_OFA fires from fixed OFA (setOFALimit) or dOFA (self-learning). ACK resets the
+  // daily counter immediately so dosing can resume. Counter also resets at midnight.
+
+  // Dashboard: show dOFA warm-up state or today's usage (read every loop, low cost).
+  // getDOFAPct() returns 0 until the first qualifying day — this is normal on day 1,
+  // not a fault. isDOFALearning() distinguishes "still learning" from "baseline ready".
+  static unsigned long lastDOFAPrint = 0;
+  if (millis() - lastDOFAPrint >= 60000UL) {
+    lastDOFAPrint = millis();
+    if (phPump.isDOFALearning()) {
+      Serial.println(F("[dOFA] Still learning — baseline not yet established (normal on day 1)."));
+    } else {
+      Serial.print(F("[dOFA] Today's proportional run: "));
+      Serial.print(phPump.getDOFAPct());
+      Serial.println(F("% of learned baseline."));
+    }
+  }
   bool buttonState = digitalRead(PIN_ACK_BUTTON);
   if (buttonState == LOW && lastButtonState == HIGH) {
     phPump.acknowledgeAlarm();
