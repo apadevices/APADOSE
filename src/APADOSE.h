@@ -11,7 +11,7 @@
  * - EEPROM persistent storage
  * - Hardware-agnostic callback interface
  *
- * Version: 3.13.1
+ * Version: 3.16.1
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.15.2"
+#define APA_DOSE_VERSION "3.16.1"
 #define APA_DOSE_VERSION_MAJOR 3
-#define APA_DOSE_VERSION_MINOR 15
-#define APA_DOSE_VERSION_PATCH 2
+#define APA_DOSE_VERSION_MINOR 16
+#define APA_DOSE_VERSION_PATCH 1
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -93,6 +93,15 @@ constexpr unsigned long FILTER_OFF_ALARM_MS = 30UL * 60UL * 1000UL;  // 30 minut
 // Reference limit set by setOFALimit() is for a 20 m³ pool and scales with setPoolVolume().
 constexpr uint8_t OFA_WARNING_PCT = 70;  // status warning fires, dosing continues
 constexpr uint8_t OFA_STOP_PCT    = 90;  // ALARM_OFA fires, dosing stops until ACK + midnight reset
+
+// Dynamic OFA (dOFA) — self-learning daily baseline; always on, zero config needed.
+// Accumulates proportional-only run time; excludes manual doses, shock, and prime.
+// EMA is updated once per day at midnight (or 24 h millis rollover) when at least
+// DOFA_MIN_DAILY_SEC of proportional run time was accumulated.
+constexpr uint16_t DOFA_MIN_DAILY_SEC    = 60;   // min seconds/day to update EMA (skips idle days)
+constexpr uint16_t DOFA_MIN_BASELINE_SEC = 300;  // min learned baseline (5 min) before checks activate
+constexpr uint8_t  DOFA_WARN_FACTOR      = 150;  // warning at 1.5× learned baseline
+constexpr uint8_t  DOFA_STOP_FACTOR      = 200;  // ALARM_OFA at 2.0× learned baseline
 
 // Mandatory settling time after the external stop callback clears.
 // Prevents a dose from firing immediately when an operator toggles between filtration
@@ -202,9 +211,10 @@ struct __attribute__((packed)) ConfigData {
   ApaDoseDirection phDirection;      // pH direction: PH_PLUS or PH_MINUS (ignored for DOSE_CL)
   uint8_t          nudgePct;         // Adaptive PB: 0 = disabled, 1–25 = nudge rate %
   float            adaptedPB;        // Adaptive PB: current learned value; 0.0 when disabled
+  uint16_t         dofaLearnedSec;   // dOFA: EMA learned daily baseline (seconds); 0 = still learning
   uint16_t         checksum;         // Data integrity validation
 };
-constexpr uint8_t APA_DOSE_CONFIG_VERSION = 4;
+constexpr uint8_t APA_DOSE_CONFIG_VERSION = 5;  // bumped: dofaLearnedSec added; old EEPROM falls back to safe defaults
 
 // Feedback phase state machine — replaces three separate bool fields
 enum FeedbackPhase : uint8_t {
@@ -269,7 +279,7 @@ private:
   ApaDoseType      dosingType;
   ApaDoseDirection phDirection;
 
-  // Boolean state — 20 flags packed into 3 bytes (vs 20 bytes as individual bools)
+  // Boolean state — 22 flags packed into 3 bytes (vs 22 bytes as individual bools)
   struct {
     bool dosingActive        : 1;
     bool blackoutMessageSent : 1;
@@ -291,6 +301,8 @@ private:
     bool phHoldSent          : 1;  // rate-limits "CL held: pH high" status message (Option J)
     bool settleHoldSent      : 1;  // rate-limits "CL held: settling" status message (Option A)
     bool ofaWarningSent      : 1;  // rate-limits OFA 70% warning — reset at midnight
+    bool dofaDisabled        : 1;  // disableDOFA() sets this; suppresses all dOFA checks
+    bool dofaWarningSent     : 1;  // rate-limits dOFA 150% warning — reset at midnight
   } flags;
 
   // System state
@@ -354,6 +366,11 @@ private:
   // Over-feed alarm (OFA) — cumulative pump run-time limit per day
   uint16_t _dailyPumpRunSec;  // accumulated pump-on time today (seconds); resets at midnight
   uint8_t  _ofaLimitMin;      // reference limit at 20 m³ (minutes); 0 = disabled (default)
+
+  // Dynamic OFA (dOFA) — self-learning proportional-only run-time baseline
+  uint16_t _dofaLearnedSec;   // EMA learned daily baseline (seconds); 0 = still learning
+  uint16_t _dofaDailyRunSec;  // proportional-only run time today (seconds); excludes shock + manual
+  uint8_t  _dofaAdaptDays;    // EMA smoothing factor: N in (N-1)/N; range 3–30, default 10
 
   // Scheduled pre-dose (C-pred) — requires RTC; inert when _schedDurationMs == 0
   uint8_t       _schedHour;          // 0-23
@@ -421,6 +438,7 @@ private:
   uint16_t     calculateChecksum(const ConfigData& config);
   void         resetToDefaults();
   void         accumulateAndCheckOFA(unsigned long durationMs);
+  void         accumulateAndCheckDOFA(unsigned long durationMs);
   void         manageShock();
   void         stopShock(const __FlashStringHelper* msg);
   static uint32_t toApproxHours(ApaDoseTime t);
@@ -514,6 +532,17 @@ public:
   // Dosing resumes automatically at midnight after ACK. Priming is exempt.
   void    setOFALimit(uint8_t referenceMinutes = 30);
   uint8_t getOFAPct() const;  // 0–100 % of today's scaled limit consumed; 0 when disabled
+
+  // Dynamic OFA (dOFA) — self-learning daily baseline; always on, no configuration required.
+  // Learns the normal proportional run time for THIS pool and fires ALARM_OFA when today's
+  // run time exceeds 2× the learned baseline (warning at 1.5×). Both dOFA and fixed OFA
+  // are independent — whichever fires first controls. Excludes manual doses, shock, and prime.
+  // EMA baseline is persisted to EEPROM at midnight and survives power cycles.
+  void    setDOFAAdaptDays(uint8_t days);  // EMA speed: 3–30 days, default 10; call in setup()
+  void    disableDOFA();                   // suppress all dOFA checks for this instance
+  uint8_t getDOFAPct() const;              // today's proportional run vs baseline (0–100 %); 0 = learning
+  bool    isDOFALearning() const;          // true while baseline not yet established (~3–5 dosing days)
+  void    resetDOFA();                     // clear baseline + daily counter; call at spring opening
   void acknowledgeAlarm();
   void forceConfigurationSave();
   // Resets per-instance EEPROM fields to type-defaults, stops any active dose/prime/shock, clears alarm.
