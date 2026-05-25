@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.16.4] — 2026-05-25
+
+### Fixed
+
+- **Over-setpoint diagram labels corrected** — in the "Dead-band and over-setpoint alarm correlation"
+  diagram (README and API.md), the ruler labels at 7.30 and 7.50 were swapped. For a pH-PLUS pump
+  (setpoint 7.4, dead-band 10 %): 7.30 = dead-band entry (SP − W), 7.50 = ALARM_OVER_SETPOINT
+  threshold (SP + W). The arrow text above the ruler was already correct; only the labels
+  underneath were transposed.
+
+---
+
 ## [3.16.3] — 2026-05-25
 
 ### Added
