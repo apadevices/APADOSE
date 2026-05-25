@@ -1,4 +1,4 @@
-<p align="center">
+﻿<p align="center">
   <img src="extras/apadose-banner.png" alt="APADOSE" width="600">
 </p>
 
@@ -7,7 +7,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.16.3** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.16.4** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
@@ -160,7 +160,7 @@ When a dead-band is configured, the same band width `W` is mirrored symmetricall
   don't dose ◄──── W ────►│◄──── W ──── alarm fires after 30 min
                           7.4
            7.30          7.40          7.50
-       ALARM_OVER_SP      SP       (dead-band entry)
+       (dead-band entry)  SP       ALARM_OVER_SP
 ```
 
 `ALARM_OVER_SETPOINT` is non-latching and auto-clears the moment the sensor returns to the dosing zone. No `acknowledgeAlarm()` call is needed.
