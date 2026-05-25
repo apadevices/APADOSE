@@ -1,4 +1,4 @@
-/*
+﻿/*
  * APA-Dose Library
  *
  * A non-blocking, bulletproof dosing system for swimming pool chemical automation
@@ -11,7 +11,7 @@
  * - EEPROM persistent storage
  * - Hardware-agnostic callback interface
  *
- * Version: 3.16.2
+ * Version: 3.16.4
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.16.3"
+#define APA_DOSE_VERSION "3.16.4"
 #define APA_DOSE_VERSION_MAJOR 3
 #define APA_DOSE_VERSION_MINOR 16
-#define APA_DOSE_VERSION_PATCH 3
+#define APA_DOSE_VERSION_PATCH 4
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
