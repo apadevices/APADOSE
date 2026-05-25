@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.15.0
+ * Version: 3.16.1
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -74,6 +74,7 @@ ApaDose::ApaDose(uint8_t pumpPin, uint16_t eepromAddress)
     lastDoseSensorBefore(0.0f), lastDoseSensorAfter(0.0f),
     pumpFlowRateMlPerMin(450.0f), dailyVolumeMl(0.0f), lastDoseVolumeMl(0.0f),
     _dailyPumpRunSec(0), _ofaLimitMin(0),
+    _dofaLearnedSec(0), _dofaDailyRunSec(0), _dofaAdaptDays(10),
     _schedHour(0), _schedMinute(0), _schedDurationMs(0),
     _schedThreshold(NAN), _schedIntervalDays(1),
     _schedDaysRemaining(0), _schedLastSeenDay(255),
@@ -424,12 +425,34 @@ void ApaDose::manageProportionalDosing() {
   if (readRTCTime != nullptr) {
     ApaDoseTime t = readRTCTime();
     if (t.day != lastKnownDay) {
+      // dOFA midnight EMA update — must run before zeroing _dofaDailyRunSec
+      if (!flags.dofaDisabled && _dofaDailyRunSec >= DOFA_MIN_DAILY_SEC) {
+        if (_dofaLearnedSec == 0) {
+          // Cold-start seeding: require at least DOFA_MIN_BASELINE_SEC so the seeded
+          // baseline is guaranteed to be ≥ the alarm-activation floor. Days with
+          // 60–299 s of run time are skipped — baseline stays 0 and isDOFALearning()
+          // stays true until a more representative day arrives.
+          if (_dofaDailyRunSec >= DOFA_MIN_BASELINE_SEC) {
+            _dofaLearnedSec = _dofaDailyRunSec;
+            saveConfiguration();
+          }
+        } else {
+          uint32_t upd = ((uint32_t)_dofaLearnedSec * (_dofaAdaptDays - 1) + _dofaDailyRunSec) / _dofaAdaptDays;
+          _dofaLearnedSec = (upd > 65535U) ? 65535U : (uint16_t)upd;
+          saveConfiguration();
+        }
+      }
+      _dofaDailyRunSec      = 0;
+      flags.dofaWarningSent = false;
+
       dailyDoseCount       = 0;
       dailyVolumeMl        = 0.0f;
       _dailyPumpRunSec     = 0;
       flags.ofaWarningSent = false;
       lastKnownDay         = t.day;
       lastDailyReset       = millis();
+      // Midnight auto-clears ALARM_OFA and ALARM_DAILY_LIMIT without operator ACK —
+      // intentional: unattended systems must recover overnight without manual intervention.
       if (alarm.currentAlarm == ALARM_DAILY_LIMIT ||
           alarm.currentAlarm == ALARM_OFA) clearAlarm();
     }
@@ -438,11 +461,33 @@ void ApaDose::manageProportionalDosing() {
     if (flags.outsideDosingWindow) return;
   } else {
     if (millis() - lastDailyReset >= 24UL * 60UL * 60UL * 1000UL) {
+      // dOFA midnight EMA update — must run before zeroing _dofaDailyRunSec
+      if (!flags.dofaDisabled && _dofaDailyRunSec >= DOFA_MIN_DAILY_SEC) {
+        if (_dofaLearnedSec == 0) {
+          // Cold-start seeding: require at least DOFA_MIN_BASELINE_SEC so the seeded
+          // baseline is guaranteed to be ≥ the alarm-activation floor. Days with
+          // 60–299 s of run time are skipped — baseline stays 0 and isDOFALearning()
+          // stays true until a more representative day arrives.
+          if (_dofaDailyRunSec >= DOFA_MIN_BASELINE_SEC) {
+            _dofaLearnedSec = _dofaDailyRunSec;
+            saveConfiguration();
+          }
+        } else {
+          uint32_t upd = ((uint32_t)_dofaLearnedSec * (_dofaAdaptDays - 1) + _dofaDailyRunSec) / _dofaAdaptDays;
+          _dofaLearnedSec = (upd > 65535U) ? 65535U : (uint16_t)upd;
+          saveConfiguration();
+        }
+      }
+      _dofaDailyRunSec      = 0;
+      flags.dofaWarningSent = false;
+
       dailyDoseCount       = 0;
       dailyVolumeMl        = 0.0f;
       _dailyPumpRunSec     = 0;
       flags.ofaWarningSent = false;
       lastDailyReset       = millis();
+      // Midnight auto-clears ALARM_OFA and ALARM_DAILY_LIMIT without operator ACK —
+      // intentional: unattended systems must recover overnight without manual intervention.
       if (alarm.currentAlarm == ALARM_DAILY_LIMIT ||
           alarm.currentAlarm == ALARM_OFA) clearAlarm();
     }
@@ -696,8 +741,10 @@ void ApaDose::stopDosingPulse() {
   lastDosingEnd      = now;
   lastAnyDoseEnd     = now;
 
-  if (!flags.manualDoseActive)
+  if (!flags.manualDoseActive) {
     accumulateAndCheckOFA(actualDuration);
+    accumulateAndCheckDOFA(actualDuration);
+  }
 }
 
 DosingPulse ApaDose::applyFeedbackCorrections(DosingPulse p) {
@@ -898,8 +945,14 @@ void ApaDose::checkAlarmClearConditions() {
 
 void ApaDose::clearAlarm() {
   if (alarm.currentAlarm == ALARM_OFA) {
-    _dailyPumpRunSec     = 0;
-    flags.ofaWarningSent = false;
+    // ACK resets both counters regardless of which system fired the alarm (fixed OFA or dOFA).
+    // Wiping _dofaDailyRunSec means today's partial dOFA run is lost — the EMA update at
+    // midnight is skipped for this day. Accepted trade-off: ACK = "operator acknowledges today
+    // was abnormal; start fresh." The baseline adapts naturally over subsequent normal days.
+    _dailyPumpRunSec      = 0;
+    flags.ofaWarningSent  = false;
+    _dofaDailyRunSec      = 0;
+    flags.dofaWarningSent = false;
   }
   ApaDoseAlarm previous  = alarm.currentAlarm;
   alarm.currentAlarm     = ALARM_NONE;
@@ -1331,6 +1384,53 @@ void ApaDose::accumulateAndCheckOFA(unsigned long durationMs) {
   }
 }
 
+void ApaDose::accumulateAndCheckDOFA(unsigned long durationMs) {
+  if (flags.dofaDisabled) return;
+
+  uint32_t total   = (uint32_t)_dofaDailyRunSec + durationMs / 1000UL;
+  _dofaDailyRunSec = (total > 65535U) ? 65535U : (uint16_t)total;
+
+  if (_dofaLearnedSec < DOFA_MIN_BASELINE_SEC) return;
+
+  uint32_t stopThresh = (uint32_t)_dofaLearnedSec * DOFA_STOP_FACTOR / 100;
+  uint32_t warnThresh = (uint32_t)_dofaLearnedSec * DOFA_WARN_FACTOR / 100;
+
+  if ((uint32_t)_dofaDailyRunSec > stopThresh) {
+    char buf[20];
+    FSTR_TO_BUF(buf, F("dOFA:limit"), 19);
+    buf[19] = '\0';
+    triggerAlarm(ALARM_OFA, buf);
+  } else if ((uint32_t)_dofaDailyRunSec > warnThresh && !flags.dofaWarningSent) {
+    sendStatus(onStatusMessage, F("dOFA:150% warning"));
+    flags.dofaWarningSent = true;
+  }
+}
+
+void ApaDose::setDOFAAdaptDays(uint8_t days) {
+  _dofaAdaptDays = constrain(days, 3, 30);
+}
+
+void ApaDose::disableDOFA() {
+  flags.dofaDisabled = true;
+}
+
+uint8_t ApaDose::getDOFAPct() const {
+  if (flags.dofaDisabled || _dofaLearnedSec == 0) return 0;
+  return (uint8_t)min(100UL, (uint32_t)_dofaDailyRunSec * 100UL / _dofaLearnedSec);
+}
+
+bool ApaDose::isDOFALearning() const {
+  return !flags.dofaDisabled && _dofaLearnedSec == 0;
+}
+
+void ApaDose::resetDOFA() {
+  _dofaLearnedSec       = 0;
+  _dofaDailyRunSec      = 0;
+  flags.dofaDisabled    = false;
+  flags.dofaWarningSent = false;
+  saveConfiguration();
+}
+
 unsigned long ApaDose::getSecondsUntilNextDose() const {
   if (lastDosingEnd == 0) return 0;
   unsigned long elapsed = millis() - lastDosingEnd;
@@ -1432,6 +1532,7 @@ bool ApaDose::loadConfiguration() {
   proportionalBand = config.proportionalBand;
   nudgePct         = config.nudgePct;
   adaptedPB        = config.adaptedPB;
+  _dofaLearnedSec  = config.dofaLearnedSec;
   // Guard against a corrupt adaptedPB that passed the checksum
   if (nudgePct > 0 && (adaptedPB <= 0.0f || !isfinite(adaptedPB)))
     adaptedPB = proportionalBand;
@@ -1446,9 +1547,10 @@ void ApaDose::saveConfiguration() {
   config.proportionalBand = proportionalBand;
   config.dosingType       = dosingType;
   config.phDirection      = phDirection;
-  config.nudgePct  = nudgePct;
-  config.adaptedPB = adaptedPB;
-  config.checksum  = calculateChecksum(config);
+  config.nudgePct        = nudgePct;
+  config.adaptedPB       = adaptedPB;
+  config.dofaLearnedSec  = _dofaLearnedSec;
+  config.checksum        = calculateChecksum(config);
 
   EEPROM.put(eepromBaseAddress, config);
 #if defined(ESP8266) || defined(ESP32)
@@ -1499,4 +1601,9 @@ void ApaDose::resetToDefaults() {
   _efficiencyEma     = 0.0f;
   _efficiencyCount   = 0;
   _lastEfficiencyPct = 100;
+  // dOFA — reset learned baseline; _dofaAdaptDays intentionally kept (set in setup())
+  _dofaLearnedSec       = 0;
+  _dofaDailyRunSec      = 0;
+  flags.dofaDisabled    = false;
+  flags.dofaWarningSent = false;
 }
