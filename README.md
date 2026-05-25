@@ -7,7 +7,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.16.2** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.16.3** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
@@ -21,6 +21,7 @@ Part of the **APA Devices** product family.
 - **Adaptive proportional band** — optional self-learning mode: after each feedback cycle the library nudges the effective band up when the sensor overshot, down when it undershot, converging toward the pool's true chemical response; disabled by default, enabled with `enableAdaptivePB(nudgePct)` (1–25% per cycle); learned value is EEPROM-persistent per pump
 - **Pool volume scaling** — one call (`ApaDose::setPoolVolume(m3)`) scales pulse duration, rest period, and feedback timing for pools between 10–90 m³; reference is 20 m³; pools above ~30 m³ require this to converge to setpoint; disabled by default for backward compatibility; survives `factoryReset()`
 - **Dead-band** — optional noise filter (`ApaDose::setDeadbandPct(pct)`, 0–20% of proportional band) suppresses dosing when the error is small; asymmetric entry/exit hysteresis prevents oscillation at the boundary; same % value applies correctly to both pH and ORP; cleared by `factoryReset()`
+- **Over-setpoint alarm** — if the sensor stays on the wrong side of setpoint for more than 30 minutes, `ALARM_OVER_SETPOINT` fires to notify the operator that chemistry has drifted past target without intervention; when a dead-band is configured the alarm mirrors the same band width on the opposite side of the setpoint (with dead-band off, any persistent over-setpoint triggers it); auto-clears the moment the reading returns to the dosing zone — no acknowledge required
 - **pH-first dosing priority (J)** — `clPump.setPhPump(&phPump)` links the CL pump to the pH pump; CL dosing is automatically suspended when pH exceeds 7.6 (`CL_PH_MAX`), where chlorine is mostly ineffective; resumes when pH returns below threshold; off by default
 - **Cross-settle coupling (A)** — `clPump.setCrossSettleMinutes(n)` holds CL dosing for N minutes after each pH dose, preventing the pH/ORP see-saw caused by acid doses temporarily depressing ORP during mixing; off by default; requires `setPhPump()` first
 
@@ -30,7 +31,7 @@ Part of the **APA Devices** product family.
 - **External stop** — optional callback from any external system (maintenance mode, backwash, cover) blocks all dosing immediately; a mandatory 5-minute settling time applies after the signal clears before dosing resumes
 - **Chemical tank empty sensor** — optional dry-contact callback (`setTankEmptyCallback()`) fires `ALARM_TANK_EMPTY` the instant the tank runs dry; blocks dosing and priming until the tank is refilled and acknowledged; zero SRAM cost if unused
 - **Over-feed alarm (OFA)** — protects against over-dosing by tracking how many minutes each pump runs each day; call `setOFALimit(30)` once in `setup()` to set a 30-minute reference for a 20 m³ pool — the library scales the limit automatically for other pool sizes if you called `setPoolVolume()`; at 70 % of the limit a status warning fires (dosing continues); at 90 % `ALARM_OFA` fires, dosing stops, and the ACK button is required — pressing ACK resets the counter immediately so dosing can resume straight away; the counter also resets automatically at midnight so unattended systems recover on their own without operator attention; `getOFAPct()` returns today's usage (0–100 %) for a dashboard row; disabled by default
-- **Dynamic OFA (dOFA)** — self-learning over-feed protection; always active, zero configuration needed; dOFA learns what a normal dosing day looks like for THIS pool and fires `ALARM_OFA` when today's proportional run time exceeds 2× the learned baseline (warning status at 1.5×); no limit to guess — the library builds it automatically from real daily usage; both dOFA and fixed OFA coexist independently, whichever fires first controls; baseline is EMA-averaged over the last N days (default 10, adjustable 3–30 via `setDOFAAdaptDays()`), persisted to EEPROM at midnight and survives power cycles; warm-up is ~3–5 dosing days before the baseline is ready — during warm-up the pool is protected by `ALARM_INEFFECTIVE`, `ALARM_WRONG_DIRECTION`, `ALARM_SAFETY_BAND`, the daily dose limit, and optional fixed OFA; `isDOFALearning()` returns `true` during warm-up; `getDOFAPct()` returns today's proportional run as a % of the learned baseline; call `resetDOFA()` at spring opening to restart learning after a seasonal shutdown; sensor-less pumps are inert (proportional dosing never runs, counter stays 0)
+- **Dynamic OFA (dOFA)** — self-learning over-feed protection; always active, zero configuration needed; dOFA learns what a normal dosing day looks like for THIS pool and fires `ALARM_OFA` when today's proportional run time exceeds 2× the learned baseline (warning status at 1.5×); no limit to guess — the library builds it automatically from real daily usage; both dOFA and fixed OFA coexist independently, whichever fires first controls; baseline is EMA-averaged over the last N days (default 10, adjustable 3–14 via `setDOFAAdaptDays()`), persisted to EEPROM at midnight and survives power cycles; the baseline is ready from day 2 onwards — one qualifying day (≥ 5 min proportional run) is sufficient; during warm-up the pool is protected by `ALARM_INEFFECTIVE`, `ALARM_WRONG_DIRECTION`, `ALARM_SAFETY_BAND`, the daily dose limit, and optional fixed OFA; `isDOFALearning()` returns `true` during warm-up; `getDOFAPct()` returns today's proportional run as a % of the learned baseline; call `resetDOFA()` at spring opening to restart learning after a seasonal shutdown; sensor-less pumps are inert (proportional dosing never runs, counter stays 0)
 - **Setpoint range enforcement** — pH 6.8 – 7.8 and ORP 400 – 850 mV enforced on every write; out-of-range values rejected before reaching EEPROM
 - **Inter-pump chemical lockout** — 90-second enforced gap after any pump instance doses; prevents incompatible chemicals meeting at the same pipe inlet
 - **Startup blackout** — optional N-minute dosing hold after power-on (`blackoutMinutes` parameter in `begin()`); gives electrochemical sensors time to stabilize before the first dose decision; `isInStartupBlackout()` exposes the state for display
@@ -147,6 +148,23 @@ threshold    25 %      50 %      75 %                   100 %
   Suppresses dosing within 10% of band from SP; exits at 5% (hysteresis).
 ```
 
+### Dead-band and over-setpoint alarm correlation
+
+When a dead-band is configured, the same band width `W` is mirrored symmetrically on **both** sides of the setpoint. The dosing zone boundary (`SP − W` for a raising pump) is also the over-setpoint alarm threshold on the far side (`SP + W`). With dead-band disabled (`W = 0`), any persistent over-setpoint reading triggers the alarm.
+
+```
+  pH-PLUS pump example  (setpoint 7.4, band 1.0, dead-band 10 %)
+
+  dead-band width W = 10% × 1.0 = 0.10 pH
+
+  don't dose ◄──── W ────►│◄──── W ──── alarm fires after 30 min
+                          7.4
+           7.30          7.40          7.50
+       ALARM_OVER_SP      SP       (dead-band entry)
+```
+
+`ALARM_OVER_SETPOINT` is non-latching and auto-clears the moment the sensor returns to the dosing zone. No `acknowledgeAlarm()` call is needed.
+
 *The chlorine (ORP) pump follows the pH-PLUS pattern — dosing starts when ORP falls below setpoint.*
 
 > **One direction per pump.** Each `ApaDose` instance controls one chemical direction — either raising pH (`PH_PLUS`) or lowering it (`PH_MINUS`). Running both a pH+ and a pH- pump on the same pool at the same time is **not supported** and will cause the two pumps to fight each other. Choose the direction that matches your water — install only that one pump for pH control.
@@ -229,6 +247,7 @@ Most safety features are always active with no configuration required. Two featu
 | **Inter-pump lockout** | After any pump instance completes a dose, all other instances wait 90 s before starting. Prevents back-to-back injection of incompatible chemicals at the same inlet (acid + chlorine → chlorine gas). |
 | **Shock interlock** | While `triggerShock()` is running on a chlorine pump, all other `ApaDose` instances are held immediately — `"Held:shock active"` fires once per held instance. When shock ends all instances resume automatically. This prevents pH acid from being dosed into a high-ORP pool mid-shock. |
 | **Post-shock safety band suppression** | After shock completes, the safety band alarm is suppressed for the cooldown window (default 24 h, max 48 h) while elevated ORP normalizes. Without suppression, the expected post-shock ORP level would trigger a false `ALARM_SAFETY_BAND` within minutes of stopping. `"Post-shock normal"` fires when the window expires. |
+| **Over-setpoint protection** | If the sensor stays on the wrong side of setpoint for more than 30 minutes, `ALARM_OVER_SETPOINT` fires. The threshold mirrors the dead-band width on the opposite side of the setpoint — the same `W` that defines the dosing entry boundary. With dead-band disabled (`W = 0`) any persistent over-setpoint triggers it. Auto-clears when the reading returns to the dosing zone — no ACK needed. Cost: 4 bytes SRAM per instance. |
 
 ---
 
@@ -245,6 +264,7 @@ Alarms stop the pump immediately. Each alarm is reported through the `onAlarmTri
 | `ALARM_SENSOR_FAULT` | Invalid/out-of-range readings for 2 min, or no valid reading for 30 min | Automatic when sensor recovers — no acknowledgment needed |
 | `ALARM_TANK_EMPTY` | Tank empty callback returned `true` at dose-start time | Refill tank → `acknowledgeAlarm()` |
 | `ALARM_OFA` | Daily proportional run-time reached 90 % of the `setOFALimit()` ceiling **or** 2× the dOFA learned baseline | `acknowledgeAlarm()` — resets both daily counters immediately; counters also reset automatically at midnight |
+| `ALARM_OVER_SETPOINT` | Sensor on wrong side of setpoint for >30 min | Automatic when sensor returns to dosing zone — no ACK needed |
 | `ALARM_INVALID_PARAM` | Bad configuration value | Rejected silently — no alarm stays active |
 
 ### Receiving alarms via callback
