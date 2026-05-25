@@ -36,14 +36,14 @@ const uint8_t PIN_ALARM_LED    = 13;
 const uint8_t PIN_ACK_BUTTON   = 3;
 const uint8_t PIN_SHOCK_BUTTON = 4;  // dedicated shock trigger
 
-// Each ApaDose instance needs a unique EEPROM start address, spaced sizeof(ConfigData) = 20 bytes apart.
-// Without unique addresses, both pumps share the same 20 bytes — each boot one pump overwrites the
+// Each ApaDose instance needs a unique EEPROM start address, spaced sizeof(ConfigData) = 22 bytes apart.
+// Without unique addresses, both pumps share the same 22 bytes — each boot one pump overwrites the
 // other's saved setpoint, proportional band, and direction, causing erratic behaviour.
-// Default address is 192. Add one instance per 20-byte block:
+// Default address is 192. Add one instance per 22-byte block:
 //   phPump → 192  (default, APA_DOSE_EEPROM_ADDRESS)
-//   clPump → 212  (192 + 20)
-//   3rd pump → 232  (192 + 40)   APA_DOSE_EEPROM_ADDRESS + 2*sizeof(ConfigData)
-//   4th pump → 252  (192 + 60)   APA_DOSE_EEPROM_ADDRESS + 3*sizeof(ConfigData)
+//   clPump → 214  (192 + 22)
+//   3rd pump → 236  (192 + 44)   APA_DOSE_EEPROM_ADDRESS + 2*sizeof(ConfigData)
+//   4th pump → 258  (192 + 66)   APA_DOSE_EEPROM_ADDRESS + 3*sizeof(ConfigData)
 ApaDose phPump(PIN_PH_PUMP);                                                // EEPROM 192
 ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 212
 
@@ -126,6 +126,25 @@ void setup() {
   // This prevents acid and chlorine being injected back-to-back at the same pipe inlet —
   // they can react to produce chlorine gas. If your second pump seems slow after the first
   // one runs, this is the reason — it is working as intended.
+
+  // --- Dynamic OFA / dOFA (always on — zero config needed) ---
+  // dOFA independently tracks each pump's proportional run time and learns what is normal
+  // for THIS pool. ALARM_OFA fires when today's proportional run exceeds 2× the baseline.
+  // Both pumps have separate dOFA baselines — pH pump and CL pump learn independently.
+  //
+  // Warm-up: baseline seeds at midnight of the first qualifying day — typically day 2 per pump.
+  // isDOFALearning() returns true until then. During that first day the pool is protected
+  // by other safety systems (ALARM_INEFFECTIVE, ALARM_WRONG_DIRECTION, ALARM_SAFETY_BAND).
+  // getDOFAPct()    returns today's proportional run as % of the learned baseline.
+  //   Returns 0 until the first qualifying day — normal on day 1, not a fault.
+  //
+  // First install: leave the resetDOFA() lines below commented out.
+  //   dOFA starts learning automatically from the very first proportional dose.
+  // Spring opening: uncomment ONCE on the first startup after a shutdown of several weeks.
+  //   dOFA then re-learns for the current season. Comment out again after that one boot.
+  //
+  // phPump.resetDOFA();  // spring opening — uncomment once, then comment out again
+  // clPump.resetDOFA();  // spring opening — uncomment once, then comment out again
 
   Serial.println(F("Ready. Press SHOCK button to trigger shock dosing."));
   Serial.println(F("SHOCK button requires: filter running, pH 7.0-7.6, ORP below target."));
