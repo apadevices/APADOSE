@@ -5,6 +5,87 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.16.1] — 2026-05-25
+
+### Changed
+
+- **Dual license** — replaced MIT license with a dual-license model. Non-commercial
+  use (personal, private, educational, hobby) remains free of charge under the same
+  permissive terms. Commercial use (selling hardware with this library pre-installed,
+  commercial pool maintenance services, integration into products sold to third parties)
+  now requires a separate written Commercial License.
+  Contact: **jaroslav@vazac.eu**
+- Added commercial licensing notice to README.
+
+---
+
+## [3.16.0] — 2026-05-25
+
+### Added
+
+- **Dynamic OFA (dOFA) — self-learning over-feed alarm** — always active, zero configuration
+  required. dOFA observes the normal proportional run time for THIS pool and fires `ALARM_OFA`
+  when today's proportional run time exceeds 2× the EMA learned baseline (warning status at 1.5×).
+  No limit to guess or set — the library builds the baseline from real daily usage.
+
+  Algorithm: exponential moving average over N days (default N = 10, configurable 3–30 via
+  `setDOFAAdaptDays()`). First qualifying day seeds the baseline directly (cold-start seeding —
+  no false alarms during warm-up). Baseline is persisted to EEPROM at midnight and survives power
+  cycles. A mid-day power cycle loses the day's accumulation (RAM only); the learned baseline is
+  safe in EEPROM. Checks activate only after the baseline reaches DOFA_MIN_BASELINE_SEC (300 s,
+  5 min) — `isDOFALearning()` returns true during warm-up (~3–5 dosing days).
+
+  Both dOFA and fixed OFA (`setOFALimit()`) run independently and coexist. Both reuse `ALARM_OFA`.
+  Whichever fires first controls. `acknowledgeAlarm()` resets both daily counters.
+
+  Excluded from dOFA accumulation: `triggerManualDose()`, `triggerShock()`, `triggerPrime()`.
+  Sensor-less pumps: dOFA is inert — proportional dosing never runs, counter stays 0.
+
+  New public API:
+  - `setDOFAAdaptDays(uint8_t days)` — EMA speed 3–30, default 10; call in `setup()`
+  - `disableDOFA()` — suppress all dOFA checks for this instance
+  - `getDOFAPct()` — today's proportional run as % of learned baseline (0–100; 0 = learning)
+  - `isDOFALearning()` — true while baseline not yet established
+  - `resetDOFA()` — clears baseline + daily counter; call at spring opening
+
+  New constants: `DOFA_MIN_DAILY_SEC` (60 s), `DOFA_MIN_BASELINE_SEC` (300 s),
+  `DOFA_WARN_FACTOR` (150 %), `DOFA_STOP_FACTOR` (200 %).
+
+### Changed
+
+- **EEPROM layout** — `ConfigData` gains a `uint16_t dofaLearnedSec` field; `sizeof(ConfigData)`
+  grows from 20 to 22 bytes; `APA_DOSE_CONFIG_VERSION` bumped 4 → 5. Existing EEPROM data
+  (version 4) fails validation, falls back to safe defaults, and is re-saved in the new format on
+  the first boot — this is intentional and safe. EEPROM address comments in multi-pump examples
+  updated to reflect the new 22-byte stride.
+
+- **`factoryReset()` now resets dOFA** — clears the learned baseline, zeroes the daily counter,
+  and re-enables dOFA if it had been disabled.
+
+- **`acknowledgeAlarm()` for `ALARM_OFA` now resets both counters** — `_dailyPumpRunSec` (fixed
+  OFA) and `_dofaDailyRunSec` (dOFA) are both zeroed; both `ofaWarningSent` and `dofaWarningSent`
+  flags are cleared.
+
+- **Flags bitfield** — two new bits added: `dofaDisabled` and `dofaWarningSent`; total 22 flags,
+  still packed into 3 bytes (2 bits remaining before the next byte boundary).
+
+- **SRAM footprint** — two-pump Uno sketch grows by approximately 10 bytes (5 B per instance:
+  `_dofaLearnedSec` u16 + `_dofaDailyRunSec` u16 + `_dofaAdaptDays` u8); flags bitfield unchanged
+  at 3 bytes; new baseline: ~857 B RAM / ~20 KB flash on Uno.
+
+### Documentation
+
+- README: dOFA added to **Key Features → Safety** section; OFA accumulation note in dosing cycle
+  updated to mention dOFA counter; `ALARM_OFA` table row updated to include dOFA as a source;
+  footprint bullet updated.
+- API.md: new **Dynamic OFA (dOFA)** section alongside the fixed OFA section, with full API table,
+  threshold table, warm-up note, RTC note, and spring-opening guidance.
+- Examples 01, 02, 06: dOFA comment block added; `sizeof(ConfigData)` comments updated to 22 bytes;
+  hardcoded EEPROM address strides in comments updated (212 → 214, 232 → 236, 252 → 258); example
+  06 `printAlarmStatus()` now includes `printDOFA()` per pump.
+
+---
+
 ## [3.15.2] — 2026-05-24
 
 ### Fixed
