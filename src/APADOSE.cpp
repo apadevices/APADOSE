@@ -75,6 +75,7 @@ ApaDose::ApaDose(uint8_t pumpPin, uint16_t eepromAddress)
     pumpFlowRateMlPerMin(450.0f), dailyVolumeMl(0.0f), lastDoseVolumeMl(0.0f),
     _dailyPumpRunSec(0), _ofaLimitMin(0),
     _dofaLearnedSec(0), _dofaDailyRunSec(0), _dofaAdaptDays(10),
+    _overSetpointSince(0),
     _schedHour(0), _schedMinute(0), _schedDurationMs(0),
     _schedThreshold(NAN), _schedIntervalDays(1),
     _schedDaysRemaining(0), _schedLastSeenDay(255),
@@ -292,6 +293,13 @@ void ApaDose::readSensors() {
   flags.sensorStaleWarned = false;
   sensorValue             = raw;
   lastGoodSensorTime      = millis();
+
+  // ALARM_OVER_SETPOINT auto-clears on every fresh reading — no ACK needed.
+  // Runs unconditionally so the alarm clears even while update()'s alarm-guard is active.
+  if (flags.alarmActive && alarm.currentAlarm == ALARM_OVER_SETPOINT) {
+    float delta = dosesUp() ? (setpoint - sensorValue) : (sensorValue - setpoint);
+    if (delta >= -(s_deadbandPct / 100.0f) * proportionalBand) clearAlarm();
+  }
 
   if (!flags.alarmActive) {
     if (flags.shockActive) {
@@ -524,7 +532,11 @@ void ApaDose::manageProportionalDosing() {
   }
 
   if (shouldStartDosing() && feedback.phase == FB_IDLE) {
+    _overSetpointSince      = 0;
+    flags.overSetpointFired = false;
     startBeforeDosingMeasurements();
+  } else if (feedback.phase == FB_IDLE) {
+    checkOverSetpoint();
   }
 }
 
@@ -944,6 +956,10 @@ void ApaDose::checkAlarmClearConditions() {
 }
 
 void ApaDose::clearAlarm() {
+  if (alarm.currentAlarm == ALARM_OVER_SETPOINT) {
+    _overSetpointSince      = 0;
+    flags.overSetpointFired = false;
+  }
   if (alarm.currentAlarm == ALARM_OFA) {
     // ACK resets both counters regardless of which system fired the alarm (fixed OFA or dOFA).
     // Wiping _dofaDailyRunSec means today's partial dOFA run is lost — the EMA update at
@@ -975,6 +991,7 @@ const char* ApaDose::getAlarmName(ApaDoseAlarm type) {
     case ALARM_SENSOR_FAULT:    return "Sensor fault";
     case ALARM_TANK_EMPTY:      return "Tank empty";
     case ALARM_OFA:             return "OFA limit";
+    case ALARM_OVER_SETPOINT:   return "Over setpoint";
     default:                    return "Unknown";
   }
 }
@@ -1130,6 +1147,38 @@ bool ApaDose::triggerShock(uint16_t targetORP, uint8_t maxDurationHours, float c
 
   sendStatus(onStatusMessage, F("Shock started"));
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Over-setpoint protection
+// ---------------------------------------------------------------------------
+
+void ApaDose::checkOverSetpoint() {
+  // dosesUp() true → pump raises value (PH_PLUS, CL).
+  // delta > 0: reading on correct side (needs dosing). delta < 0: reading past setpoint wrong way.
+  float delta   = dosesUp() ? (setpoint - sensorValue) : (sensorValue - setpoint);
+  float mirrorW = (s_deadbandPct / 100.0f) * proportionalBand;
+
+  if (delta >= -mirrorW) {
+    // Within mirror zone or on correct side — reset timer and flag.
+    _overSetpointSince      = 0;
+    flags.overSetpointFired = false;
+    return;
+  }
+
+  // Reading is past the mirror threshold on the wrong side of the setpoint.
+  // Start the timer on first detection; fire alarm after OVER_SETPOINT_DELAY_MS.
+  unsigned long now = millis();
+  if (_overSetpointSince == 0) _overSetpointSince = now;
+
+  if (!flags.overSetpointFired &&
+      (now - _overSetpointSince) >= OVER_SETPOINT_DELAY_MS) {
+    char buf[20];
+    FSTR_TO_BUF(buf, dosesUp() ? F("OverSP:too high") : F("OverSP:too low"), 19);
+    buf[19] = '\0';
+    triggerAlarm(ALARM_OVER_SETPOINT, buf);
+    flags.overSetpointFired = true;
+  }
 }
 
 void ApaDose::manageShock() {
@@ -1606,4 +1655,7 @@ void ApaDose::resetToDefaults() {
   _dofaDailyRunSec      = 0;
   flags.dofaDisabled    = false;
   flags.dofaWarningSent = false;
+  // Over-setpoint protection
+  _overSetpointSince      = 0;
+  flags.overSetpointFired = false;
 }
