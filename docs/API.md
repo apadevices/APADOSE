@@ -1,6 +1,6 @@
 # APA-Dose Library — API Reference
 
-**Version**: 3.12.0  
+**Version**: 3.16.1  
 **File**: `APADOSE.h` / `APADOSE.cpp`
 
 ---
@@ -733,6 +733,83 @@ void loop() {
 ```
 
 `setOFALimit()` is per pump instance — set different limits for pH and chlorine if needed. Call after `begin()`.
+
+---
+
+## Dynamic OFA (dOFA)
+
+```cpp
+void    setDOFAAdaptDays(uint8_t days);  // EMA speed: 3–30 days, default 10; call in setup()
+void    disableDOFA();                   // suppress all dOFA checks for this instance
+uint8_t getDOFAPct() const;              // today's proportional run vs baseline (0–100 %); 0 = learning
+bool    isDOFALearning() const;          // true during warm-up (~3–5 dosing days)
+void    resetDOFA();                     // clear baseline and daily counter; call at spring opening
+```
+
+Self-learning over-feed protection that requires zero configuration. dOFA observes the normal proportional run time for THIS pool and fires `ALARM_OFA` when today's run time is abnormally high — no limit to guess, no calibration, nothing to set.
+
+**Always active by default.** Works alongside fixed OFA (`setOFALimit()`): both run independently and both reuse `ALARM_OFA`. Whichever fires first controls. Pressing ACK resets both daily counters.
+
+**How dOFA learns:**
+
+Each midnight (or after 24 h without an RTC), if at least 60 seconds of proportional run time was accumulated, the EMA baseline is updated:
+
+```
+First qualifying day → baseline = today's run time (cold-start seed)
+Subsequent days      → baseline = baseline × (N-1)/N + today × 1/N
+```
+
+Where N = `_dofaAdaptDays` (default 10). The baseline is written to EEPROM at midnight and survives power cycles. A mid-day power cycle loses the day's accumulation (RAM only) but the learned baseline is safe.
+
+**Alarm thresholds:**
+
+| Threshold | Effect |
+|-----------|--------|
+| 150 % of baseline | Status message `"dOFA:150% warning"` — dosing continues (e.g. normal 10 min/day → warning above 15 min) |
+| 200 % of baseline | `ALARM_OFA` fires — dosing stops until acknowledged (e.g. normal 10 min/day → alarm above 20 min) |
+
+Checks are suppressed until the baseline reaches at least 300 seconds (5 min). `isDOFALearning()` returns `true` and `getDOFAPct()` returns 0 during this warm-up.
+
+**What counts toward dOFA:** proportional dosing pulses only.
+
+**What does NOT count:** `triggerManualDose()`, `triggerShock()`, and `triggerPrime()`.
+
+**Warm-up protection:** During the ~3–5 day warm-up period the pool is guarded by `ALARM_INEFFECTIVE`, `ALARM_WRONG_DIRECTION`, `ALARM_SAFETY_BAND`, the daily dose limit, and optional fixed OFA.
+
+**RTC note:** RTC improves dOFA accuracy after reboots — without one, a power cycle mid-day restarts the 24-hour window, which can slightly skew the learned baseline over time. For stable systems without frequent reboots the millis fallback is adequate.
+
+**Spring opening:** Call `resetDOFA()` on each pump after a seasonal shutdown of more than a few weeks — the library then re-learns current chemistry rather than using last year's baseline. Call it once on the first startup of the season; dOFA re-learns automatically from that point forward.
+
+```cpp
+void setup() {
+  phPump.begin(...);
+  clPump.begin(...);
+
+  // Spring opening — restart dOFA on both pumps after seasonal shutdown
+  // phPump.resetDOFA();
+  // clPump.resetDOFA();
+
+  // Optional tuning — speed up learning for first install (default 10)
+  // phPump.setDOFAAdaptDays(5);
+  // clPump.setDOFAAdaptDays(5);
+}
+
+void loop() {
+  phPump.update();
+  clPump.update();
+
+  // Dashboard: show dOFA warm-up state or today's usage
+  if (phPump.isDOFALearning()) {
+    lcd.print(F("pH dOFA: warming up"));
+  } else {
+    Serial.print(F("pH dOFA today: "));
+    Serial.print(phPump.getDOFAPct());
+    Serial.println(F("%"));
+  }
+}
+```
+
+`resetDOFA()` clears the learned baseline, zeroes the daily counter, and re-enables dOFA if it was disabled. Call on each pump instance individually. After reset, `isDOFALearning()` returns `true` and warm-up restarts (~3–5 dosing days).
 
 ---
 
