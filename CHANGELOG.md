@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.16.2] — 2026-05-25
+
+### Fixed
+
+- **dOFA adaptation range capped at 14 days** — `setDOFAAdaptDays()` previously accepted 3–30;
+  upper limit reduced to 14. N=30 adapts too slowly for seasonal pools (time constant ~30 days
+  means spring-to-summer chemistry changes take 6+ weeks to track, causing false `ALARM_OFA`
+  fires during legitimate heavy-use periods).
+- **dOFA warm-up documentation corrected** — all docs, examples, and API reference previously
+  claimed "~3–5 dosing days" warm-up. The actual behaviour is: `isDOFALearning()` becomes false
+  at midnight of the **first qualifying day** (day with ≥5 min proportional run time) — typically
+  day 2. The "3–5 days" figure was wrong everywhere it appeared; all occurrences fixed.
+- README banner width 400 → 600 px.
+- Dosing cycle ASCII diagram right-border alignment corrected (consistent 58-char inner width).
+
+---
+
 ## [3.16.1] — 2026-05-25
 
 ### Changed
