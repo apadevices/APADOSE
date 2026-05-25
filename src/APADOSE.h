@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.16.2"
+#define APA_DOSE_VERSION "3.16.3"
 #define APA_DOSE_VERSION_MAJOR 3
 #define APA_DOSE_VERSION_MINOR 16
-#define APA_DOSE_VERSION_PATCH 2
+#define APA_DOSE_VERSION_PATCH 3
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -102,6 +102,11 @@ constexpr uint16_t DOFA_MIN_DAILY_SEC    = 60;   // min seconds/day to update EM
 constexpr uint16_t DOFA_MIN_BASELINE_SEC = 300;  // min learned baseline (5 min) before checks activate
 constexpr uint8_t  DOFA_WARN_FACTOR      = 150;  // warning at 1.5× learned baseline
 constexpr uint8_t  DOFA_STOP_FACTOR      = 200;  // ALARM_OFA at 2.0× learned baseline
+
+// Over-setpoint protection — mirrors the dead-band zone on the opposite side of the setpoint.
+// If the reading stays beyond (setpoint ± deadbandW) on the wrong side for this long, ALARM_OVER_SETPOINT fires.
+// Auto-clears the moment the reading returns to the dosing zone — no ACK needed.
+constexpr uint32_t OVER_SETPOINT_DELAY_MS = 1800000UL;  // 30 min
 
 // Mandatory settling time after the external stop callback clears.
 // Prevents a dose from firing immediately when an operator toggles between filtration
@@ -186,7 +191,8 @@ enum ApaDoseAlarm {
   ALARM_DAILY_LIMIT,      // maximum daily dose count reached — auto-clears at midnight / 24 h
   ALARM_SENSOR_FAULT,     // Sensor reading invalid (out of range / NaN) for >2 min, or no reading for >30 min
   ALARM_TANK_EMPTY,       // chemical tank empty — requires refill and acknowledgeAlarm()
-  ALARM_OFA               // cumulative daily pump run time exceeded 90% of setOFALimit() — requires acknowledgeAlarm()
+  ALARM_OFA,              // cumulative daily pump run time exceeded 90% of setOFALimit() — requires acknowledgeAlarm()
+  ALARM_OVER_SETPOINT     // sensor has been on the wrong side of setpoint for >30 min — auto-clears when reading returns to dosing zone
 };
 
 // --- Internal structures ---
@@ -279,7 +285,7 @@ private:
   ApaDoseType      dosingType;
   ApaDoseDirection phDirection;
 
-  // Boolean state — 22 flags packed into 3 bytes (vs 22 bytes as individual bools)
+  // Boolean state — 23 flags packed into 3 bytes (vs 23 bytes as individual bools)
   struct {
     bool dosingActive        : 1;
     bool blackoutMessageSent : 1;
@@ -303,6 +309,7 @@ private:
     bool ofaWarningSent      : 1;  // rate-limits OFA 70% warning — reset at midnight
     bool dofaDisabled        : 1;  // disableDOFA() sets this; suppresses all dOFA checks
     bool dofaWarningSent     : 1;  // rate-limits dOFA 150% warning — reset at midnight
+    bool overSetpointFired   : 1;  // prevents re-trigger while ALARM_OVER_SETPOINT is active
   } flags;
 
   // System state
@@ -372,6 +379,9 @@ private:
   uint16_t _dofaDailyRunSec;  // proportional-only run time today (seconds); excludes shock + manual
   uint8_t  _dofaAdaptDays;    // EMA smoothing factor: N in (N-1)/N; range 3–14, default 10
 
+  // Over-setpoint protection
+  unsigned long _overSetpointSince;  // millis() when reading first crossed mirror threshold; 0 = not triggered
+
   // Scheduled pre-dose (C-pred) — requires RTC; inert when _schedDurationMs == 0
   uint8_t       _schedHour;          // 0-23
   uint8_t       _schedMinute;        // 0-59
@@ -439,6 +449,7 @@ private:
   void         resetToDefaults();
   void         accumulateAndCheckOFA(unsigned long durationMs);
   void         accumulateAndCheckDOFA(unsigned long durationMs);
+  void         checkOverSetpoint();
   void         manageShock();
   void         stopShock(const __FlashStringHelper* msg);
   static uint32_t toApproxHours(ApaDoseTime t);
