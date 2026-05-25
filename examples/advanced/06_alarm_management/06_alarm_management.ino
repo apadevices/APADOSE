@@ -30,9 +30,10 @@
  *   ALARM_TANK_EMPTY       — requires ACK button; fires when setTankEmptyCallback() returns true
  *                              at dose-start time; dosing AND priming blocked until resolved
  *   ALARM_OFA              — requires ACK button; fires at 90 % of the daily pump run-time limit
- *                              set by setOFALimit(); a 70 % warning fires first (dosing continues);
- *                              counter and alarm reset automatically at midnight — ACK resumes
- *                              dosing the next day; disabled by default
+ *                              set by setOFALimit(), OR when dOFA detects today's proportional
+ *                              run time exceeds 2× the self-learned baseline (dOFA is always
+ *                              active, no setOFALimit() call needed); a 70 %/1.5× warning fires
+ *                              first (dosing continues); counter resets on ACK or at midnight
  *   ALARM_SAFETY_BAND      — auto-clears when sensor returns to safe range
  *   ALARM_INVALID_PARAM    — never latches; silent rejection only
  *
@@ -64,10 +65,10 @@ const uint8_t  PIN_ACK_BUTTON    = 3;
 const uint16_t LONG_PRESS_MS     = 2000;
 
 // Each ApaDose instance must have a unique EEPROM base address, spaced by
-// sizeof(ConfigData). Without unique addresses both pumps would overwrite
+// sizeof(ConfigData) = 22 bytes. Without unique addresses both pumps would overwrite
 // the same bytes and corrupt each other's saved configuration on every boot.
 ApaDose phPump(PIN_PH_PUMP);                                                // EEPROM 192 (default)
-ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 212
+ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 214
 
 float getpH()         { return 7.2; /* replace */ }
 float getORP()        { return 640; /* replace */ }
@@ -154,6 +155,22 @@ void printOFA(const char* name, ApaDose& pump) {
   Serial.println(F("% of today's limit"));
 }
 
+// Print dOFA status for one pump.
+// During warm-up: shows "learning" — normal until the first qualifying day (typically day 2).
+// Once ready: shows today's proportional run as % of the learned baseline.
+void printDOFA(const char* name, ApaDose& pump) {
+  Serial.print(F("  ")); Serial.print(name);
+  if (pump.isDOFALearning()) {
+    // Normal on first install or after resetDOFA() — baseline seeds at midnight of day 1.
+    // No action needed; pool is protected by other safety alarms during this first day.
+    Serial.println(F(" dOFA: warming up — normal, alarm active from day 2"));
+  } else {
+    Serial.print(F(" dOFA: "));
+    Serial.print(pump.getDOFAPct());
+    Serial.println(F("% of learned baseline"));
+  }
+}
+
 // --- Alarm status report ---
 void printAlarmStatus() {
   Serial.println(F("--- Alarm Status ---"));
@@ -168,6 +185,7 @@ void printAlarmStatus() {
   }
   printDelivery("pH ", phPump);
   printOFA("pH ", phPump);
+  printDOFA("pH ", phPump);
 
   if (clPump.isAlarmActive()) {
     Serial.print(F("  CL  ALARM : ")); Serial.println(clPump.getAlarmMessage());
@@ -179,6 +197,7 @@ void printAlarmStatus() {
   }
   printDelivery("CL ", clPump);
   printOFA("CL ", clPump);
+  printDOFA("CL ", clPump);
 
   Serial.println(F("--------------------"));
 }
@@ -272,6 +291,24 @@ void setup() {
   // Default is 20 (active out of the box after 3 warm-up doses). Pass 0 to disable the alarm.
   // phPump.setEfficiencyThreshold(20);  // default — set lower to tolerate more variance
   // clPump.setEfficiencyThreshold(20);  // independent per pump
+
+  // --- Dynamic OFA / dOFA (always on — zero config needed) ---
+  // Each pump independently learns its normal proportional run time and fires ALARM_OFA
+  // when today exceeds 2× the baseline (warning status at 1.5×). No setup required.
+  // Warm-up: baseline ready after the first qualifying day. isDOFALearning() returns true until then.
+  // getDOFAPct() shows today's proportional run vs the learned baseline (shown in printDOFA above).
+  //
+  // Spring opening — call resetDOFA() on each pump after a long shutdown so the library
+  // re-learns the current season's chemistry rather than using last year's baseline:
+  // phPump.resetDOFA();
+  // clPump.resetDOFA();
+  //
+  // To disable dOFA for a pump entirely (e.g. sensor-less algaecide pump):
+  // phPump.disableDOFA();
+  //
+  // To speed up or slow down learning (default 10 days, range 3–14):
+  // phPump.setDOFAAdaptDays(5);
+  // clPump.setDOFAAdaptDays(5);
 
   // --- Over-feed alarm / OFA (optional — leave commented out if you don't need it) ---
   // Prevents a stuck sensor or misconfigured setpoint from running the pump all day.
