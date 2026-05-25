@@ -11,7 +11,7 @@
  * - EEPROM persistent storage
  * - Hardware-agnostic callback interface
  *
- * Version: 3.16.1
+ * Version: 3.16.2
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.16.1"
+#define APA_DOSE_VERSION "3.16.2"
 #define APA_DOSE_VERSION_MAJOR 3
 #define APA_DOSE_VERSION_MINOR 16
-#define APA_DOSE_VERSION_PATCH 1
+#define APA_DOSE_VERSION_PATCH 2
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -370,7 +370,7 @@ private:
   // Dynamic OFA (dOFA) — self-learning proportional-only run-time baseline
   uint16_t _dofaLearnedSec;   // EMA learned daily baseline (seconds); 0 = still learning
   uint16_t _dofaDailyRunSec;  // proportional-only run time today (seconds); excludes shock + manual
-  uint8_t  _dofaAdaptDays;    // EMA smoothing factor: N in (N-1)/N; range 3–30, default 10
+  uint8_t  _dofaAdaptDays;    // EMA smoothing factor: N in (N-1)/N; range 3–14, default 10
 
   // Scheduled pre-dose (C-pred) — requires RTC; inert when _schedDurationMs == 0
   uint8_t       _schedHour;          // 0-23
@@ -538,10 +538,10 @@ public:
   // run time exceeds 2× the learned baseline (warning at 1.5×). Both dOFA and fixed OFA
   // are independent — whichever fires first controls. Excludes manual doses, shock, and prime.
   // EMA baseline is persisted to EEPROM at midnight and survives power cycles.
-  void    setDOFAAdaptDays(uint8_t days);  // EMA speed: 3–30 days, default 10; call in setup()
+  void    setDOFAAdaptDays(uint8_t days);  // EMA speed: 3–14 days, default 10; call in setup()
   void    disableDOFA();                   // suppress all dOFA checks for this instance
   uint8_t getDOFAPct() const;              // today's proportional run vs baseline (0–100 %); 0 = learning
-  bool    isDOFALearning() const;          // true while baseline not yet established (~3–5 dosing days)
+  bool    isDOFALearning() const;          // true until the first qualifying day (typically day 2)
   void    resetDOFA();                     // clear baseline + daily counter; call at spring opening
   void acknowledgeAlarm();
   void forceConfigurationSave();
