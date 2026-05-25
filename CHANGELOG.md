@@ -5,6 +5,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.16.3] — 2026-05-25
+
+### Added
+
+- **`ALARM_OVER_SETPOINT`** — non-latching alarm that fires when the sensor has been on the wrong
+  side of setpoint for more than 30 minutes (`OVER_SETPOINT_DELAY_MS = 1800000UL`). Notifies the
+  operator that chemistry has drifted past target with no corrective action possible by the pump.
+  - When a dead-band is configured, the alarm mirrors the same band width `W` on the opposite side
+    of the setpoint — the threshold that starts dosing on one side is exactly the threshold that
+    raises the alarm on the other.
+  - With dead-band disabled (`W = 0`), any persistent over-setpoint reading triggers it.
+  - Auto-clears the moment the sensor returns to the dosing zone — no `acknowledgeAlarm()` required.
+  - SRAM cost: 4 bytes per instance + 1 bit in the flags bitfield.
+  - New private method `checkOverSetpoint()` called from `manageProportionalDosing()` when idle.
+  - Auto-clear injected into `readSensors()` so it runs unconditionally even while alarm is active.
+
+---
+
 ## [3.16.2] — 2026-05-25
 
 ### Fixed
