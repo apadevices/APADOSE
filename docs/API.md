@@ -1,6 +1,6 @@
 # APA-Dose Library — API Reference
 
-**Version**: 3.16.1  
+**Version**: 3.16.2  
 **File**: `APADOSE.h` / `APADOSE.cpp`
 
 ---
@@ -739,10 +739,10 @@ void loop() {
 ## Dynamic OFA (dOFA)
 
 ```cpp
-void    setDOFAAdaptDays(uint8_t days);  // EMA speed: 3–30 days, default 10; call in setup()
+void    setDOFAAdaptDays(uint8_t days);  // EMA speed: 3–14 days, default 10; call in setup()
 void    disableDOFA();                   // suppress all dOFA checks for this instance
 uint8_t getDOFAPct() const;              // today's proportional run vs baseline (0–100 %); 0 = learning
-bool    isDOFALearning() const;          // true during warm-up (~3–5 dosing days)
+bool    isDOFALearning() const;          // true until the first qualifying day (typically day 2)
 void    resetDOFA();                     // clear baseline and daily counter; call at spring opening
 ```
 
@@ -774,7 +774,7 @@ Checks are suppressed until the baseline reaches at least 300 seconds (5 min). `
 
 **What does NOT count:** `triggerManualDose()`, `triggerShock()`, and `triggerPrime()`.
 
-**Warm-up protection:** During the ~3–5 day warm-up period the pool is guarded by `ALARM_INEFFECTIVE`, `ALARM_WRONG_DIRECTION`, `ALARM_SAFETY_BAND`, the daily dose limit, and optional fixed OFA.
+**Warm-up protection:** During the first dosing day (until the baseline seeds at midnight) the pool is guarded by `ALARM_INEFFECTIVE`, `ALARM_WRONG_DIRECTION`, `ALARM_SAFETY_BAND`, the daily dose limit, and optional fixed OFA.
 
 **RTC note:** RTC improves dOFA accuracy after reboots — without one, a power cycle mid-day restarts the 24-hour window, which can slightly skew the learned baseline over time. For stable systems without frequent reboots the millis fallback is adequate.
 
@@ -809,7 +809,7 @@ void loop() {
 }
 ```
 
-`resetDOFA()` clears the learned baseline, zeroes the daily counter, and re-enables dOFA if it was disabled. Call on each pump instance individually. After reset, `isDOFALearning()` returns `true` and warm-up restarts (~3–5 dosing days).
+`resetDOFA()` clears the learned baseline, zeroes the daily counter, and re-enables dOFA if it was disabled. Call on each pump instance individually. After reset, `isDOFALearning()` returns `true` until the first qualifying day — dOFA is active again from day 2.
 
 ---
 
