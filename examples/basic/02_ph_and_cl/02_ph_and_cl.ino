@@ -146,6 +146,25 @@ void setup() {
   // phPump.resetDOFA();  // spring opening — uncomment once, then comment out again
   // clPump.resetDOFA();  // spring opening — uncomment once, then comment out again
 
+  // --- Tank level estimation (optional, no hardware required) ---
+  // The library tracks cumulative chemical consumption (mL) and computes:
+  //   getTankRemainingPct()   — 0–100 % of tank remaining (255 = disabled)
+  //   getTankDaysUntilEmpty() — rolling 7-day estimate (255 = < 1 day of data)
+  // ALARM_TANK_EMPTY fires when the estimated consumed volume equals the configured capacity.
+  // Acknowledge the alarm after refilling — this resets the consumed counter to zero.
+  //
+  // Default tank capacity is 20 L. Omit these lines if your tanks are 20 L.
+  // Both tanks are independent — set each pump's capacity separately.
+  phPump.setTankCapacity(20);  // acid tank, litres — adjust to your actual tank size (1–65 L)
+  clPump.setTankCapacity(20);  // chlorine tank
+  //
+  // Accuracy depends on setPumpFlowRate() matching your pump. Default is 450 mL/min.
+  // Days-until-empty prediction becomes available after the first full 24 h of operation.
+  //
+  // If you also connect a physical float switch, register it with setTankEmptyCallback()
+  // and leave setTankCapacity() calls above in place — the HW sensor fires ALARM_TANK_EMPTY,
+  // while the percentage and days-until-empty display continue working from estimation.
+
   Serial.println(F("Ready. Press SHOCK button to trigger shock dosing."));
   Serial.println(F("SHOCK button requires: filter running, pH 7.0-7.6, ORP below target."));
 }
@@ -192,5 +211,35 @@ void loop() {
     Serial.print(F(" mV, "));
     Serial.print(rem / 60);
     Serial.println(F(" min remaining to ceiling."));
+  }
+
+  // --- Print tank level status once every 10 minutes ---
+  // getTankRemainingPct()   0–100 = % remaining; 255 = disabled (setTankCapacity not called)
+  // getTankDaysUntilEmpty() 0–254 = estimate; 255 = not enough data yet (< 1 day of dosing)
+  static unsigned long lastTankPrint = 0;
+  if (millis() - lastTankPrint >= 600000UL) {
+    lastTankPrint = millis();
+
+    uint8_t phPct  = phPump.getTankRemainingPct();
+    uint8_t phDays = phPump.getTankDaysUntilEmpty();
+    Serial.print(F("[TANK] pH acid:  "));
+    if (phPct == 255) {
+      Serial.println(F("disabled"));
+    } else {
+      Serial.print(phPct); Serial.print(F("% remaining"));
+      if (phDays < 255) { Serial.print(F(", ~")); Serial.print(phDays); Serial.print(F(" days")); }
+      Serial.println();
+    }
+
+    uint8_t clPct  = clPump.getTankRemainingPct();
+    uint8_t clDays = clPump.getTankDaysUntilEmpty();
+    Serial.print(F("[TANK] Chlorine: "));
+    if (clPct == 255) {
+      Serial.println(F("disabled"));
+    } else {
+      Serial.print(clPct); Serial.print(F("% remaining"));
+      if (clDays < 255) { Serial.print(F(", ~")); Serial.print(clDays); Serial.print(F(" days")); }
+      Serial.println();
+    }
   }
 }
