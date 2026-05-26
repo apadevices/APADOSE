@@ -5,13 +5,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.17.1] — 2026-05-26
+
+### Fixed
+
+- **Tank estimation disabled by default** — `_tankCapacityL` now initialises to `0` (off) instead
+  of 20. Previously, the feature was silently active for all users from first boot, which could
+  fire `ALARM_TANK_EMPTY` after ~30 days without the user ever calling `setTankCapacity()`.
+  Call `setTankCapacity(litres)` explicitly in `setup()` to enable the feature.
+- **`resetToDefaults()` / `factoryReset()`** — `_tankCapacityL` resets to 0 (was 20); consumed
+  counter and daily average reset to 0 as before.
+- **README — Monitoring bullet rewritten** to clearly present the two independent paths (software
+  estimation via `setTankCapacity()` and hardware sensor via `setTankEmptyCallback()`), their
+  individual use, and how they strengthen each other when combined.
+- **README / API.md / CHANGELOG** — removed "default 20 L" references from tank capacity
+  documentation; corrected to "disabled by default".
+
+---
+
 ## [3.17.0] — 2026-05-26
 
 ### Added
 
 - **Tank level estimation** — software-only tank tracking without a hardware float switch.
-  - `setTankCapacity(uint8_t liters)` — configure tank size (1–65 L); default 20 L; 0 disables
-    the feature. Resets the consumed counter to zero (assumes tank is full). Safe to call from
+  - `setTankCapacity(uint8_t liters)` — configure tank size (1–65 L); 0 disables the feature;
+    disabled by default — call once in `setup()` to enable. Resets the consumed counter to zero (assumes tank is full). Safe to call from
     `loop()` — EEPROM is written only when the value changes or to persist the reset.
   - `getTankRemainingPct()` — returns 0–100 % of tank remaining, or 255 when disabled.
   - `getTankDaysUntilEmpty()` — returns a rolling 7-day estimate of days until empty, or 255
