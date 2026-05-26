@@ -11,7 +11,7 @@
  * - EEPROM persistent storage
  * - Hardware-agnostic callback interface
  *
- * Version: 3.16.4
+ * Version: 3.17.0
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.16.4"
+#define APA_DOSE_VERSION "3.17.0"
 #define APA_DOSE_VERSION_MAJOR 3
-#define APA_DOSE_VERSION_MINOR 16
-#define APA_DOSE_VERSION_PATCH 4
+#define APA_DOSE_VERSION_MINOR 17
+#define APA_DOSE_VERSION_PATCH 0
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -147,6 +147,8 @@ constexpr uint16_t SHOCK_ORP_AGGRESSIVE = 800;  // heavy algae, after heavy bath
 // EEPROM configuration
 // APAPHX2_ADS1115 occupies addresses 128-177 (pH cal + ORP cal).
 // APA-Dose starts at 192, leaving a safe gap after the sensor library.
+// sizeof(ConfigData) = 25 bytes (version 6+). Per-instance layout:
+//   pump 1: 192–216   pump 2: 217–241   pump 3: 242–266   pump 4: 267–291
 constexpr uint16_t APA_DOSE_EEPROM_ADDRESS = 192;
 constexpr uint16_t APA_DOSE_MAGIC_NUMBER   = 0xABCD;
 
@@ -218,9 +220,11 @@ struct __attribute__((packed)) ConfigData {
   uint8_t          nudgePct;         // Adaptive PB: 0 = disabled, 1–25 = nudge rate %
   float            adaptedPB;        // Adaptive PB: current learned value; 0.0 when disabled
   uint16_t         dofaLearnedSec;   // dOFA: EMA learned daily baseline (seconds); 0 = still learning
+  uint8_t          tankCapacityL;    // Tank volume in litres (0 = disabled, default 20); max 65 L
+  uint16_t         tankConsumedMl;   // Cumulative consumption since last refill/ACK (mL); saved at midnight
   uint16_t         checksum;         // Data integrity validation
 };
-constexpr uint8_t APA_DOSE_CONFIG_VERSION = 5;  // bumped: dofaLearnedSec added; old EEPROM falls back to safe defaults
+constexpr uint8_t APA_DOSE_CONFIG_VERSION = 6;  // bumped: tankCapacityL + tankConsumedMl added; old EEPROM falls back to safe defaults
 
 // Feedback phase state machine — replaces three separate bool fields
 enum FeedbackPhase : uint8_t {
@@ -382,6 +386,11 @@ private:
   // Over-setpoint protection
   unsigned long _overSetpointSince;  // millis() when reading first crossed mirror threshold; 0 = not triggered
 
+  // Tank level estimation — works without a physical tank sensor; complements setTankEmptyCallback()
+  uint8_t  _tankCapacityL;   // user tank size in litres; 0 = disabled, default 20; max 65
+  uint16_t _tankConsumedMl;  // mL dispensed since last refill/ACK; persisted to EEPROM at midnight
+  uint8_t  _dailyAvgDL;     // EMA of daily consumption in decilitres (1 dL = 100 mL); 0 = no data yet
+
   // Scheduled pre-dose (C-pred) — requires RTC; inert when _schedDurationMs == 0
   uint8_t       _schedHour;          // 0-23
   uint8_t       _schedMinute;        // 0-59
@@ -470,6 +479,13 @@ public:
   void setDosingWindow(uint8_t startHour, uint8_t endHour);                       // Restrict dosing to hour range 0-23 (call before begin)
   void setExternalStopCallback(ExternalStopCallback cb);                           // Optional: block all dosing (except priming) when cb returns true
   void setTankEmptyCallback(TankEmptyCallback cb);                                  // Optional: fire ALARM_TANK_EMPTY (latching) when cb returns true; also blocks priming
+  // Tank level estimation — independent of setTankEmptyCallback(); both are optional.
+  // setTankCapacity: set tank size in litres (1–65); default 20 L. Resets consumed counter to 0.
+  //   Call in setup() for a fixed size, or conditionally in loop() when the tank is replaced.
+  //   0 = disable estimation; getTankRemainingPct() / getTankDaysUntilEmpty() return 255 (unknown).
+  // If setTankEmptyCallback() is also registered, the HW sensor is the sole alarm authority —
+  //   ALARM_TANK_EMPTY never fires from estimation. Percentage display still works normally.
+  void    setTankCapacity(uint8_t liters);      // 1–65 L; 0 = disable; default 20
   // pH-first priority (J) + cross-settle coupling (A) — call AFTER both pump begin() calls.
   // setPhPump: registers the pH peer; activates J (fixed threshold CL_PH_MAX) automatically.
   // setCrossSettleMinutes: also activates A — CL held N min after each pH dose; 0 = off.
@@ -591,6 +607,8 @@ public:
   uint8_t       getMaxDailyDoses()        const;  // configured limit; 0 = no limit
   float         getDailyVolumeMl()        const;  // total mL dosed today; resets at midnight with RTC
   float         getLastDoseVolumeMl()     const;  // mL dosed in the last completed dose
+  uint8_t       getTankRemainingPct()     const;  // 0–100 % tank remaining; 255 = estimation disabled (setTankCapacity not set)
+  uint8_t       getTankDaysUntilEmpty()   const;  // estimated days until tank empty; 255 = no data yet (< 1 full day elapsed)
   const char*   getAlarmMessage()          const;  // current alarm text, empty string if no alarm
 
   // Dose diagnostics — valid after the first complete dose + feedback cycle
