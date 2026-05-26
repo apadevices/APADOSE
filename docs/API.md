@@ -75,6 +75,8 @@ Call setup methods in this order:
 3. setRTCCallback()             optional — RTC for scheduling
 4. setDosingWindow()            optional — restrict dosing hours
 5. setExternalStopCallback()    optional — block dosing from external systems (maintenance, backwash…)
+   setTankEmptyCallback()       optional — hardware tank sensor (float switch); fires ALARM_TANK_EMPTY
+   setTankCapacity()            optional — software tank estimation (default 20 L; 0 = disable)
 6. setCallbacks()               register alarm/status callbacks BEFORE begin()
 7. begin()                      connect sensor + type + start library
 8. setEfficiencyThreshold()     optional — per-pump delivery alarm threshold (default 20; pass 0 to disable)
@@ -840,6 +842,8 @@ uint8_t          getDailyDoseCount()            const;  // doses today; resets o
 uint8_t          getMaxDailyDoses()             const;  // ceiling set in begin(); 0 = no limit
 float            getDailyVolumeMl()             const;  // total mL dosed today; resets at midnight with RTC
 float            getLastDoseVolumeMl()          const;  // mL dosed in the last completed dose
+uint8_t          getTankRemainingPct()          const;  // 0–100 % tank remaining; 255 = disabled
+uint8_t          getTankDaysUntilEmpty()        const;  // days until empty (rolling 7-day EMA); 255 = no data yet
 float            getAdaptedPB()                 const;  // current effective PB: learned value when adaptive enabled, fixed proportionalBand otherwise
 bool             isAdaptivePBEnabled()          const;  // true when nudgePct > 0
 ```
@@ -887,6 +891,78 @@ if (phPump.isAlarmActive()) {
   Serial.println(F("Ready"));
 }
 ```
+
+---
+
+### Tank level estimation
+
+Track how much chemical remains in the tank — no hardware float switch required.
+
+```cpp
+void    setTankCapacity(uint8_t liters);   // 1–65 L; 0 = disable; default 20
+uint8_t getTankRemainingPct()  const;      // 0–100 % remaining; 255 = disabled
+uint8_t getTankDaysUntilEmpty() const;     // estimated days; 255 = no data yet
+```
+
+The library accumulates the mL dispensed from every dose (proportional, manual, scheduled, shock — priming excluded) and compares the running total against the configured tank capacity. When consumed ≥ capacity, `ALARM_TANK_EMPTY` fires.
+
+**Setup:**
+```cpp
+void setup() {
+  phPump.setTankCapacity(20);  // 20 L acid tank
+  clPump.setTankCapacity(20);  // 20 L chlorine tank
+  // Default is already 20 L — call only if your tank differs.
+}
+```
+
+**Reading in loop:**
+```cpp
+uint8_t pct  = phPump.getTankRemainingPct();    // 0–100, or 255 if disabled
+uint8_t days = phPump.getTankDaysUntilEmpty();  // estimate, or 255 = no data
+
+if (pct < 255) {
+  Serial.print(F("pH tank: "));  Serial.print(pct);  Serial.println(F(" %"));
+  if (days < 255) { Serial.print(F("~")); Serial.print(days); Serial.println(F(" days")); }
+}
+```
+
+**Refill cycle (with or without physical sensor):**
+```cpp
+// ALARM_TANK_EMPTY fires → operator refills → press ACK button:
+phPump.acknowledgeAlarm();
+// _tankConsumedMl resets to 0. Tracking starts fresh from a full tank.
+```
+
+**Sentinel values:**
+
+| Value | Meaning |
+|-------|---------|
+| `getTankRemainingPct()` = 255 | Feature disabled (`setTankCapacity(0)` or never called with a non-zero value) |
+| `getTankDaysUntilEmpty()` = 255 | No data yet — fewer than one full day of dosing has elapsed since boot or last ACK |
+| `getTankDaysUntilEmpty()` = 0 | Tank is empty or nearly so |
+
+**Hardware sensor priority:**
+
+If `setTankEmptyCallback()` is also registered, the hardware sensor is the **sole alarm authority** — `ALARM_TANK_EMPTY` is never fired by estimation. The percentage and days display continue working normally from estimated consumption data. This means:
+
+- With **only** `setTankCapacity()`: estimation fires the alarm.
+- With **only** `setTankEmptyCallback()`: hardware fires the alarm; no percentage display.
+- With **both**: hardware fires the alarm; percentage display comes from estimation.
+
+**Accuracy:**
+
+Volume is estimated as `(pwm / 255) × (mlPerMin / 60000) × duration_ms`. Call `setPumpFlowRate()` with your pump's measured output for best accuracy; the default 450 mL/min gives directionally correct readings for most peristaltic pumps.
+
+**EEPROM and power cycles:**
+
+`_tankCapacityL` and `_tankConsumedMl` are persisted in `ConfigData` (saved at midnight, saved immediately on `setTankCapacity()` and `acknowledgeAlarm()`). A power cycle resumes from the last saved state — no tracking is lost.
+
+`_dailyAvgDL` (the daily consumption EMA used for days-until-empty) is **not** persisted — it rebuilds from the first midnight after boot. `getTankDaysUntilEmpty()` returns 255 until then.
+
+**SRAM cost:** 4 bytes per instance (`uint8_t _tankCapacityL` + `uint16_t _tankConsumedMl` + `uint8_t _dailyAvgDL`).  
+**EEPROM cost:** 3 bytes per instance (`tankCapacityL` + `tankConsumedMl` in `ConfigData`).
+
+---
 
 ### Inter-pump chemical lockout
 
