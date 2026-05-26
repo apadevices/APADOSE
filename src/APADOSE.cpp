@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.16.2
+ * Version: 3.17.0
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -76,6 +76,7 @@ ApaDose::ApaDose(uint8_t pumpPin, uint16_t eepromAddress)
     _dailyPumpRunSec(0), _ofaLimitMin(0),
     _dofaLearnedSec(0), _dofaDailyRunSec(0), _dofaAdaptDays(10),
     _overSetpointSince(0),
+    _tankCapacityL(20), _tankConsumedMl(0), _dailyAvgDL(0),
     _schedHour(0), _schedMinute(0), _schedDurationMs(0),
     _schedThreshold(NAN), _schedIntervalDays(1),
     _schedDaysRemaining(0), _schedLastSeenDay(255),
@@ -224,6 +225,12 @@ void ApaDose::setPumpRange(uint8_t minPWM, uint8_t maxPWM) {
 
 void ApaDose::setPumpFlowRate(float mlPerMin) {
   if (mlPerMin > 0.0f) pumpFlowRateMlPerMin = mlPerMin;
+}
+
+void ApaDose::setTankCapacity(uint8_t liters) {
+  _tankCapacityL  = (liters > 65) ? 65 : liters;
+  _tankConsumedMl = 0;  // new capacity call = tank is full now
+  saveConfiguration();
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +440,8 @@ void ApaDose::manageProportionalDosing() {
   if (readRTCTime != nullptr) {
     ApaDoseTime t = readRTCTime();
     if (t.day != lastKnownDay) {
+      bool eepromDirty = false;
+
       // dOFA midnight EMA update — must run before zeroing _dofaDailyRunSec
       if (!flags.dofaDisabled && _dofaDailyRunSec >= DOFA_MIN_DAILY_SEC) {
         if (_dofaLearnedSec == 0) {
@@ -442,14 +451,27 @@ void ApaDose::manageProportionalDosing() {
           // stays true until a more representative day arrives.
           if (_dofaDailyRunSec >= DOFA_MIN_BASELINE_SEC) {
             _dofaLearnedSec = _dofaDailyRunSec;
-            saveConfiguration();
+            eepromDirty     = true;
           }
         } else {
           uint32_t upd = ((uint32_t)_dofaLearnedSec * (_dofaAdaptDays - 1) + _dofaDailyRunSec) / _dofaAdaptDays;
           _dofaLearnedSec = (upd > 65535U) ? 65535U : (uint16_t)upd;
-          saveConfiguration();
+          eepromDirty     = true;
         }
       }
+
+      // Tank daily EMA update — N=7 rolling average in decilitres
+      if (_tankCapacityL > 0) {
+        uint8_t dl = (uint8_t)constrain(dailyVolumeMl / 100.0f, 0.0f, 255.0f);
+        if (dl > 0) {
+          _dailyAvgDL = (_dailyAvgDL == 0) ? dl
+                      : (uint8_t)(((uint16_t)_dailyAvgDL * 6U + dl) / 7U);
+        }
+        eepromDirty = true;  // _tankConsumedMl must persist across power cycles
+      }
+
+      if (eepromDirty) saveConfiguration();
+
       _dofaDailyRunSec      = 0;
       flags.dofaWarningSent = false;
 
@@ -469,6 +491,8 @@ void ApaDose::manageProportionalDosing() {
     if (flags.outsideDosingWindow) return;
   } else {
     if (millis() - lastDailyReset >= 24UL * 60UL * 60UL * 1000UL) {
+      bool eepromDirty = false;
+
       // dOFA midnight EMA update — must run before zeroing _dofaDailyRunSec
       if (!flags.dofaDisabled && _dofaDailyRunSec >= DOFA_MIN_DAILY_SEC) {
         if (_dofaLearnedSec == 0) {
@@ -478,14 +502,27 @@ void ApaDose::manageProportionalDosing() {
           // stays true until a more representative day arrives.
           if (_dofaDailyRunSec >= DOFA_MIN_BASELINE_SEC) {
             _dofaLearnedSec = _dofaDailyRunSec;
-            saveConfiguration();
+            eepromDirty     = true;
           }
         } else {
           uint32_t upd = ((uint32_t)_dofaLearnedSec * (_dofaAdaptDays - 1) + _dofaDailyRunSec) / _dofaAdaptDays;
           _dofaLearnedSec = (upd > 65535U) ? 65535U : (uint16_t)upd;
-          saveConfiguration();
+          eepromDirty     = true;
         }
       }
+
+      // Tank daily EMA update — N=7 rolling average in decilitres
+      if (_tankCapacityL > 0) {
+        uint8_t dl = (uint8_t)constrain(dailyVolumeMl / 100.0f, 0.0f, 255.0f);
+        if (dl > 0) {
+          _dailyAvgDL = (_dailyAvgDL == 0) ? dl
+                      : (uint8_t)(((uint16_t)_dailyAvgDL * 6U + dl) / 7U);
+        }
+        eepromDirty = true;  // _tankConsumedMl must persist across power cycles
+      }
+
+      if (eepromDirty) saveConfiguration();
+
       _dofaDailyRunSec      = 0;
       flags.dofaWarningSent = false;
 
@@ -522,6 +559,17 @@ void ApaDose::manageProportionalDosing() {
     buf[19] = '\0';
     triggerAlarm(ALARM_TANK_EMPTY, buf);
     return;
+  }
+
+  // Tank estimation alarm — only when no hw sensor registered (hw sensor takes priority).
+  if (_tankCapacityL > 0 && tankEmpty == nullptr) {
+    if (_tankConsumedMl >= (uint16_t)_tankCapacityL * 1000U) {
+      char buf[20];
+      FSTR_TO_BUF(buf, F("Tank empty!"), 19);
+      buf[19] = '\0';
+      triggerAlarm(ALARM_TANK_EMPTY, buf);
+      return;
+    }
   }
 
   if (maxDailyDoses > 0 && dailyDoseCount >= maxDailyDoses) {
@@ -748,6 +796,11 @@ void ApaDose::stopDosingPulse() {
                    * (float)actualDuration;
   dailyVolumeMl   += lastDoseVolumeMl;
 
+  if (_tankCapacityL > 0) {
+    uint32_t total  = (uint32_t)_tankConsumedMl + (uint16_t)min(65535.0f, lastDoseVolumeMl);
+    _tankConsumedMl = (total > 65535U) ? 65535U : (uint16_t)total;
+  }
+
   analogWrite(pumpPin, 0);
   flags.dosingActive = false;
   lastDosingEnd      = now;
@@ -959,6 +1012,11 @@ void ApaDose::clearAlarm() {
   if (alarm.currentAlarm == ALARM_OVER_SETPOINT) {
     _overSetpointSince      = 0;
     flags.overSetpointFired = false;
+  }
+  if (alarm.currentAlarm == ALARM_TANK_EMPTY) {
+    // ACK = tank refilled — reset consumed counter to start tracking a fresh full tank.
+    _tankConsumedMl = 0;
+    saveConfiguration();
   }
   if (alarm.currentAlarm == ALARM_OFA) {
     // ACK resets both counters regardless of which system fired the alarm (fixed OFA or dOFA).
@@ -1229,6 +1287,11 @@ void ApaDose::stopShock(const __FlashStringHelper* msg) {
   lastDoseVolumeMl = (pumpMaxPWM / 255.0f) * (pumpFlowRateMlPerMin / 60000.0f) * (float)elapsed;
   dailyVolumeMl   += lastDoseVolumeMl;
 
+  if (_tankCapacityL > 0) {
+    uint32_t total  = (uint32_t)_tankConsumedMl + (uint16_t)min(65535.0f, lastDoseVolumeMl);
+    _tankConsumedMl = (total > 65535U) ? 65535U : (uint16_t)total;
+  }
+
   lastDosingEnd            = now;
   lastAnyDoseEnd           = now;
   flags.shockActive        = false;
@@ -1492,6 +1555,22 @@ const char*  ApaDose::getAlarmMessage()            const { return alarm.alarmMes
 float ApaDose::getDailyVolumeMl()        const { return dailyVolumeMl; }
 float ApaDose::getLastDoseVolumeMl()     const { return lastDoseVolumeMl; }
 
+uint8_t ApaDose::getTankRemainingPct() const {
+  if (_tankCapacityL == 0) return 255;
+  uint16_t capacityMl = (uint16_t)_tankCapacityL * 1000U;
+  if (_tankConsumedMl >= capacityMl) return 0;
+  return (uint8_t)(100U - ((uint32_t)_tankConsumedMl * 100U / capacityMl));
+}
+
+uint8_t ApaDose::getTankDaysUntilEmpty() const {
+  if (_tankCapacityL == 0 || _dailyAvgDL == 0) return 255;
+  uint16_t capacityMl  = (uint16_t)_tankCapacityL * 1000U;
+  uint16_t remainingMl = (_tankConsumedMl < capacityMl) ? (capacityMl - _tankConsumedMl) : 0U;
+  if (remainingMl == 0) return 0;
+  uint16_t days = remainingMl / ((uint16_t)_dailyAvgDL * 100U);
+  return (days > 254U) ? 254U : (uint8_t)days;  // 255 reserved for "no data"
+}
+
 bool  ApaDose::hasDoseHistory()          const { return flags.lastDoseDataValid; }
 float ApaDose::getLastDoseSensorBefore() const { return lastDoseSensorBefore; }
 float ApaDose::getLastDoseSensorAfter()  const { return lastDoseSensorAfter; }
@@ -1582,6 +1661,8 @@ bool ApaDose::loadConfiguration() {
   nudgePct         = config.nudgePct;
   adaptedPB        = config.adaptedPB;
   _dofaLearnedSec  = config.dofaLearnedSec;
+  _tankCapacityL   = config.tankCapacityL;
+  _tankConsumedMl  = config.tankConsumedMl;
   // Guard against a corrupt adaptedPB that passed the checksum
   if (nudgePct > 0 && (adaptedPB <= 0.0f || !isfinite(adaptedPB)))
     adaptedPB = proportionalBand;
@@ -1596,10 +1677,12 @@ void ApaDose::saveConfiguration() {
   config.proportionalBand = proportionalBand;
   config.dosingType       = dosingType;
   config.phDirection      = phDirection;
-  config.nudgePct        = nudgePct;
-  config.adaptedPB       = adaptedPB;
-  config.dofaLearnedSec  = _dofaLearnedSec;
-  config.checksum        = calculateChecksum(config);
+  config.nudgePct         = nudgePct;
+  config.adaptedPB        = adaptedPB;
+  config.dofaLearnedSec   = _dofaLearnedSec;
+  config.tankCapacityL    = _tankCapacityL;
+  config.tankConsumedMl   = _tankConsumedMl;
+  config.checksum         = calculateChecksum(config);
 
   EEPROM.put(eepromBaseAddress, config);
 #if defined(ESP8266) || defined(ESP32)
@@ -1658,4 +1741,8 @@ void ApaDose::resetToDefaults() {
   // Over-setpoint protection
   _overSetpointSince      = 0;
   flags.overSetpointFired = false;
+  // Tank level estimation — capacity resets to default, consumed zeroed
+  _tankCapacityL  = 20;
+  _tankConsumedMl = 0;
+  _dailyAvgDL     = 0;
 }
