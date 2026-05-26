@@ -5,6 +5,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.17.0] — 2026-05-26
+
+### Added
+
+- **Tank level estimation** — software-only tank tracking without a hardware float switch.
+  - `setTankCapacity(uint8_t liters)` — configure tank size (1–65 L); default 20 L; 0 disables
+    the feature. Resets the consumed counter to zero (assumes tank is full). Safe to call from
+    `loop()` — EEPROM is written only when the value changes or to persist the reset.
+  - `getTankRemainingPct()` — returns 0–100 % of tank remaining, or 255 when disabled.
+  - `getTankDaysUntilEmpty()` — returns a rolling 7-day estimate of days until empty, or 255
+    when fewer than one full day of data is available.
+  - `ALARM_TANK_EMPTY` fires when cumulative consumption reaches the configured capacity.
+    If `setTankEmptyCallback()` is also registered, the hardware sensor is the sole alarm
+    authority and estimation never fires the alarm — percentage display continues normally.
+  - `acknowledgeAlarm()` resets `_tankConsumedMl` to zero when clearing `ALARM_TANK_EMPTY` —
+    regardless of whether the alarm was triggered by the hardware sensor or by estimation.
+  - Consumed counter and capacity are persisted to EEPROM at midnight (alongside dOFA); also
+    saved immediately on `setTankCapacity()` and on `acknowledgeAlarm()` for `ALARM_TANK_EMPTY`.
+  - Works with all pump types including sensor-less (flocculant, algaecide) and scheduled doses.
+  - SRAM cost: 4 bytes per instance (`uint8_t _tankCapacityL`, `uint16_t _tankConsumedMl`,
+    `uint8_t _dailyAvgDL`). EEPROM cost: 3 bytes per instance (`tankCapacityL`, `tankConsumedMl`
+    in `ConfigData`). `_dailyAvgDL` is RAM-only; it rebuilds after one midnight.
+- **`ConfigData` version bumped 5 → 6** — two new fields (`tankCapacityL`, `tankConsumedMl`)
+  added to `ConfigData`. `sizeof(ConfigData)` increases from 22 to 25 bytes. Existing EEPROM
+  (version 5) is detected as invalid and resets to safe defaults on first boot — setpoint,
+  proportional band, and adaptive PB must be re-entered once after upgrading.
+- **EEPROM address map updated** — per-instance layout with 25-byte blocks:
+  pump 1: 192–216 · pump 2: 217–241 · pump 3: 242–266 · pump 4: 267–291.
+- **Example `02_ph_and_cl` updated** — demonstrates `setTankCapacity()` for both pumps and
+  prints `getTankRemainingPct()` / `getTankDaysUntilEmpty()` to Serial every 10 minutes.
+
+---
+
 ## [3.16.4] — 2026-05-25
 
 ### Fixed
