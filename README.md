@@ -7,7 +7,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.16.4** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.17.0** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
@@ -48,6 +48,7 @@ Part of the **APA Devices** product family.
 
 **Monitoring**
 - **Chemical volume tracking** — `getDailyVolumeMl()` and `getLastDoseVolumeMl()` estimate consumption from actual pulse duration and PWM intensity; resets at midnight when an RTC is connected
+- **Tank level estimation** — `setTankCapacity(litres)` (default 20 L) enables software-based tank tracking with no hardware sensor required; `getTankRemainingPct()` returns 0–100 % remaining; `getTankDaysUntilEmpty()` returns a rolling 7-day consumption estimate in days (255 = not enough data yet); `ALARM_TANK_EMPTY` fires when estimated consumption reaches capacity; if a physical tank sensor is also registered via `setTankEmptyCallback()` the HW sensor is the sole alarm authority — percentage display still works; `acknowledgeAlarm()` resets the consumed counter (tank full); data persists across power cycles via EEPROM; works with any pump type including sensor-less
 - **Dose counter** — `getDailyDoseCount()` tracks combined automatic and manual doses per day; resets every 24h — at real midnight with an RTC, every 24h from boot without one
 - **Rest period queries** — `getSecondsUntilNextDose()` returns seconds remaining in the current rest period (0 when ready to dose); `getSecondsSinceLastDose()` returns seconds elapsed since the last dose completed (0 if no dose yet this session) — both are useful for dashboards and LCD status rows
 - **System status snapshot** — `getSystemStatus(buf, size)` fills a caller-supplied buffer with a single-line summary of the current state (active alarms, dosing phase, sensor value, daily dose count); size `APA_DOSE_STATUS_BUFFER_SIZE` (96) is sufficient for the longest output
@@ -57,7 +58,7 @@ Part of the **APA Devices** product family.
 - **RTC scheduling** — optional: daily counter reset at midnight, dosing window by hour; library works fully without an RTC
 - **Non-blocking** — pure `millis()` state machine; zero `delay()` calls; safe to call every `loop()` iteration alongside any other code
 - **Universal hardware support** — AVR (Uno through Mega), ESP8266, ESP32, STM32 — same source, no `#ifdef` in user code
-- **Minimal footprint** — two-pump sketch: ~20 KB flash / ~857 B RAM on Uno; ~303 B RAM per additional instance; 22 boolean flags packed into 3 bytes; dOFA adds 5 B SRAM + 2 B EEPROM per instance (zero if unused after link-time optimization); pool volume and dead-band add 2 bytes SRAM total (shared across all instances) and 3 bytes EEPROM
+- **Minimal footprint** — two-pump sketch: ~22 KB flash / ~877 B RAM on Uno; ~303 B RAM per additional instance; 23 boolean flags packed into 3 bytes; dOFA adds 5 B SRAM + 2 B EEPROM per instance; tank estimation adds 4 B SRAM + 3 B EEPROM per instance; pool volume and dead-band add 2 bytes SRAM total (shared) and 3 bytes EEPROM; `ConfigData` 25 bytes, up to 4 instances from EEPROM address 192
 - **No required dependencies** — the library itself needs only `<Arduino.h>` and `<EEPROM.h>`; RTClib (+ Adafruit BusIO) is required only when using an RTC for scheduling — not needed without one
 
 ---
@@ -239,6 +240,7 @@ Most safety features are always active with no configuration required. Two featu
 | **Ineffective dose detection** | `ALARM_INEFFECTIVE` fires when the EMA delivery ratio drops below the configured threshold (default 20%, active out of the box), when the sensor shows no response after 3 consecutive dose attempts, or when ORP fails to rise during shock. Catches empty container, blocked tube, or failed pump. |
 | **Manual dose ceiling** | `triggerManualDose()` clamps duration to 5 minutes regardless of what is passed. Prevents runaway from automation code errors. |
 | **Chemical tank empty sensor** | An optional callback registered via `setTankEmptyCallback()` fires `ALARM_TANK_EMPTY` (latching) the moment it returns `true` — e.g. a float switch or capacitive sensor wired to a dry-contact input. Blocks dosing and priming until the tank is refilled and `acknowledgeAlarm()` is called. Checked at dose-start time, not continuously, so there is no overhead during the rest period. Zero SRAM cost if unused. |
+| **Tank level estimation** | `setTankCapacity(litres)` enables software-only tank tracking without any hardware sensor. The library accumulates consumed volume (mL) from every dose and compares it to the configured capacity. `ALARM_TANK_EMPTY` fires when consumed ≥ capacity. If `setTankEmptyCallback()` is also registered, the hardware sensor is the sole alarm authority and estimation is suppressed — percentage display still works. `acknowledgeAlarm()` resets consumed to zero. Consumed counter and capacity are persisted to EEPROM at midnight and survive power cycles. Cost: 4 bytes SRAM + 3 bytes EEPROM per instance. Default capacity: 20 L. |
 | **Daily dose limit** | Optional maximum doses per day. Enabled by passing a non-zero `maxDailyDoses` to `begin()`; default is 0 (no limit). `ALARM_DAILY_LIMIT` fires when reached and clears automatically when the counter resets — at real midnight when an RTC callback is registered, every 24 h from boot without one. No acknowledgment required; dosing resumes on its own the next day. |
 | **Stale sensor / sensor fault** | If the sensor callback returns invalid or out-of-range values continuously for 2 minutes, or returns no valid value at all for 30 minutes, `ALARM_SENSOR_FAULT` fires and dosing stops. Clears automatically when the sensor recovers — no acknowledgment required. Prevents dosing against a frozen or disconnected sensor. |
 | **NaN / infinity guard** | Every sensor reading is validated before use. A single bad value sends one status message but never corrupts averaging, never triggers a false alarm, and never crashes the state machine. |
@@ -690,11 +692,11 @@ Verified build sizes (`examples/basic/02_ph_and_cl` — two-pump sketch, release
 
 | Board | Flash | RAM |
 |-------|-------|-----|
-| Arduino Uno (ATmega328P) | 20,366 B / 32,256 B (63%) | 857 B / 2,048 B (42%) |
-| Arduino Mega 2560 | 21,422 B / 253,952 B (8%) | 857 B / 8,192 B (10%) |
-| ESP32-DevKit | 294,973 B / 1,310,720 B (23%) | 22,184 B / 327,680 B (7%) |
-| NodeMCU v2 (ESP8266) | 281,327 B / 1,044,464 B (27%) | 28,936 B / 81,920 B (35%) |
-| Blue Pill (STM32F103C8T6) | 31,172 B / 65,536 B (48%) | 2,740 B / 20,480 B (13%) |
+| Arduino Uno (ATmega328P) | 22,424 B / 32,256 B (70%) | 877 B / 2,048 B (43%) |
+| Arduino Mega 2560 | 23,476 B / 253,952 B (9%) | 877 B / 8,192 B (11%) |
+| ESP32-DevKit | 296,533 B / 1,310,720 B (23%) | 22,208 B / 327,680 B (7%) |
+| NodeMCU v2 (ESP8266) | 282,747 B / 1,044,464 B (27%) | 28,968 B / 81,920 B (35%) |
+| Blue Pill (STM32F103C8T6) | 32,424 B / 65,536 B (49%) | 2,764 B / 20,480 B (14%) |
 
 ESP flash totals include the full Arduino framework (WiFi stack, OS); the library itself adds a few KB on top of a bare sketch.
 
@@ -767,11 +769,6 @@ APA-DOSING_LIB/
 
 ---
 
-**Author:** kecup@vazac.eu  
-**© APA Devices**
-
----
-
 ## License
 
 APA-Dose is released under a **dual license**:
@@ -789,3 +786,8 @@ Using this library in commercial products or services is strictly prohibited wit
 For commercial licensing, custom integration, volume pricing, or OEM arrangements, please contact:
 
 **jaroslav@vazac.eu**
+
+---
+
+**Author:** kecup@vazac.eu  
+**© APA Devices**
