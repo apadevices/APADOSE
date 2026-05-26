@@ -76,7 +76,7 @@ ApaDose::ApaDose(uint8_t pumpPin, uint16_t eepromAddress)
     _dailyPumpRunSec(0), _ofaLimitMin(0),
     _dofaLearnedSec(0), _dofaDailyRunSec(0), _dofaAdaptDays(10),
     _overSetpointSince(0),
-    _tankCapacityL(20), _tankConsumedMl(0), _dailyAvgDL(0),
+    _tankCapacityL(0), _tankConsumedMl(0), _dailyAvgDL(0),
     _schedHour(0), _schedMinute(0), _schedDurationMs(0),
     _schedThreshold(NAN), _schedIntervalDays(1),
     _schedDaysRemaining(0), _schedLastSeenDay(255),
@@ -1741,8 +1741,8 @@ void ApaDose::resetToDefaults() {
   // Over-setpoint protection
   _overSetpointSince      = 0;
   flags.overSetpointFired = false;
-  // Tank level estimation — capacity resets to default, consumed zeroed
-  _tankCapacityL  = 20;
+  // Tank level estimation — disabled by default; user must call setTankCapacity() to activate
+  _tankCapacityL  = 0;
   _tankConsumedMl = 0;
   _dailyAvgDL     = 0;
 }
