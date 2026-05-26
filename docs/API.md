@@ -76,7 +76,7 @@ Call setup methods in this order:
 4. setDosingWindow()            optional — restrict dosing hours
 5. setExternalStopCallback()    optional — block dosing from external systems (maintenance, backwash…)
    setTankEmptyCallback()       optional — hardware tank sensor (float switch); fires ALARM_TANK_EMPTY
-   setTankCapacity()            optional — software tank estimation (default 20 L; 0 = disable)
+   setTankCapacity()            optional — software tank estimation; disabled by default; 0 = disable
 6. setCallbacks()               register alarm/status callbacks BEFORE begin()
 7. begin()                      connect sensor + type + start library
 8. setEfficiencyThreshold()     optional — per-pump delivery alarm threshold (default 20; pass 0 to disable)
@@ -899,7 +899,7 @@ if (phPump.isAlarmActive()) {
 Track how much chemical remains in the tank — no hardware float switch required.
 
 ```cpp
-void    setTankCapacity(uint8_t liters);   // 1–65 L; 0 = disable; default 20
+void    setTankCapacity(uint8_t liters);   // 1–65 L; 0 = disable; disabled by default
 uint8_t getTankRemainingPct()  const;      // 0–100 % remaining; 255 = disabled
 uint8_t getTankDaysUntilEmpty() const;     // estimated days; 255 = no data yet
 ```
