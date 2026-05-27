@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.17.2
+ * Version: 3.17.3
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
