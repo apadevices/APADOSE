@@ -1,6 +1,6 @@
 ﻿# APA-Dose Library — API Reference
 
-**Version**: 3.17.2  
+**Version**: 3.17.3  
 **File**: `APADOSE.h` / `APADOSE.cpp`
 
 ---
@@ -69,7 +69,7 @@ void setup() {
 
 Call setup methods in this order:
 
-```
+```text
 1. setPumpRange()               calibrate motor dead band
 2. setPumpFlowRate()            optional — pump output at max PWM in mL/min (default 450)
 3. setRTCCallback()             optional — RTC for scheduling
@@ -124,10 +124,13 @@ ApaDose algiPump(PIN_ALGI_PUMP, APA_DOSE_EEPROM_ADDRESS + 3 * sizeof(ConfigData)
 ## Setup Methods
 
 ### `setPumpRange()`
+
 ```cpp
 void setPumpRange(uint8_t minPWM, uint8_t maxPWM);
 ```
+
 Calibrates the PWM range for this specific pump motor.
+
 - `minPWM` — PWM level where the motor actually starts spinning (measure for your pump)
 - `maxPWM` — maximum allowed PWM, usually `255`
 - Default if not called: `minPWM = 50`, `maxPWM = 255`
@@ -142,9 +145,11 @@ A 10% minimum floor above `minPWM` is applied to every dose to overcome pipe and
 ---
 
 ### `setPumpFlowRate()`
+
 ```cpp
 void setPumpFlowRate(float mlPerMin);
 ```
+
 Sets the pump's output rate at maximum PWM, used to calculate dosed volume.
 
 - `mlPerMin` — measured flow rate in mL/min at max PWM (must be > 0; ignored otherwise)
@@ -158,9 +163,11 @@ Enables `getDailyVolumeMl()` and `getLastDoseVolumeMl()`. If `setPumpFlowRate()`
 ---
 
 ### `setDosingType()`
+
 ```cpp
 bool setDosingType(ApaDoseType newType);
 ```
+
 Changes the chemical type at runtime and loads the matching sensor profile (pH or ORP).
 
 Use this for runtime type changes **after `begin()` has run** — for example, switching from `DOSE_PH` to `DOSE_CL`. To change pH pump direction (acid ↔ base) at runtime, use `setPhDirection()` instead. The type and direction for initial setup are passed as parameters to `begin()`.
@@ -172,19 +179,24 @@ Returns `false` if dosing is currently active.
 ---
 
 ### `setRTCCallback()`
+
 ```cpp
 void setRTCCallback(RTCReadCallback rtcReader);
 ```
+
 Connects an external RTC. When registered:
+
 - The daily dose counter resets automatically when the day changes.
 - Dosing windows (`setDosingWindow()`) become active.
 
 ---
 
 ### `setDosingWindow()`
+
 ```cpp
 void setDosingWindow(uint8_t startHour, uint8_t endHour);
 ```
+
 Restricts dosing to a time window. `startHour` inclusive, `endHour` exclusive (both 0–23).  
 Example: `setDosingWindow(8, 20)` allows dosing 08:00–19:59 only.  
 Has no effect without an RTC callback registered.
@@ -192,9 +204,11 @@ Has no effect without an RTC callback registered.
 ---
 
 ### `setExternalStopCallback()`
+
 ```cpp
 void setExternalStopCallback(ExternalStopCallback cb);
 ```
+
 Registers an optional callback that blocks all dosing (automatic and manual) while it returns `true`. Priming (`triggerPrime()`) is not affected.
 
 Typical use cases: pool maintenance mode, backwash cycle, pool cover closed, or any external condition where injecting chemistry into a non-circulating or diverted water flow is unsafe.
@@ -230,10 +244,12 @@ The 5-minute settling time (`EXTERNAL_STOP_RESUME_MS`) is hardcoded. It prevents
 ---
 
 ### `setPhPump()` / `setCrossSettleMinutes()`
+
 ```cpp
 void setPhPump(ApaDose* phPump);
 void setCrossSettleMinutes(uint8_t minutes);
 ```
+
 Links a CL pump instance to a pH pump peer, enabling two optional features. **Call AFTER both `begin()` calls.**
 
 **Option J — pH-first dosing priority** (activated by `setPhPump()` alone):  
@@ -262,16 +278,19 @@ clPump.setCrossSettleMinutes(15);   // Option A: 15 min hold after pH doses
 ---
 
 ### `setCallbacks()`
+
 ```cpp
 void setCallbacks(AlarmCallback alarmTriggered,
                   AlarmCallback alarmCleared   = nullptr,
                   StatusCallback statusMessage = nullptr);
 ```
+
 All parameters optional. **Call before `begin()`** to receive startup messages.
 
 ---
 
 ### `begin()`
+
 ```cpp
 bool begin(SensorReadCallback sensorReader, FilterCallback filter, ApaDoseType type, ApaDoseDirection dir, uint8_t blackoutMinutes = 0, uint8_t maxDailyDoses = 0);
 bool begin(SensorReadCallback sensorReader, ApaDoseType type, ApaDoseDirection dir, uint8_t blackoutMinutes = 0, uint8_t maxDailyDoses = 0);
@@ -328,9 +347,11 @@ void factoryReset();                        // force-stop any active dose/prime,
 `setProbeSetpoint()` and `setProportionalBand()` return `false` if the value is out of range or dosing is currently active.
 
 ### `factoryReset()`
+
 ```cpp
 void factoryReset();
 ```
+
 Resets all EEPROM-stored user settings to their type-default values in a single call.
 
 **Sequence:**
@@ -390,6 +411,7 @@ bool triggerPrime(unsigned long durationMs, uint8_t pwm = 0);          // 0 = us
 | External stop active | external stop callback returns `true` |
 | External stop resume delay | 5-minute settling time after external stop cleared |
 | Inter-pump lockout active | 90 s since the last dose on any instance has not elapsed |  
+
 If `durationMs` exceeds `MAX_MANUAL_DOSE_MS` (5 minutes), it is silently clamped and a `"Dose capped:5min"` status message is sent — the dose still runs at the capped duration.  
 The optional `restMs` parameter (default 20 min) sets the mixing wait before the next proportional dose. Pass `0` only for sensor-less pumps where `maxDailyDoses` already prevents double-dosing.
 
@@ -756,7 +778,7 @@ Self-learning over-feed protection that requires zero configuration. dOFA observ
 
 Each midnight (or after 24 h without an RTC), if at least 60 seconds of proportional run time was accumulated, the EMA baseline is updated:
 
-```
+```text
 First qualifying day → baseline = today's run time (cold-start seed)
 Subsequent days      → baseline = baseline × (N-1)/N + today × 1/N
 ```
@@ -982,6 +1004,7 @@ This prevents back-to-back injection of incompatible chemicals — for example, 
 The library validates every sensor reading with `isfinite()`.
 
 > **Temperature compensation:** pH sensor readings are temperature-dependent (~0.003 pH/°C). The **APAPHX** and **APAPHX2** libraries apply the Passco 2001 formula to deliver a stable, temperature-compensated value automatically. If using a different sensor library, apply temperature compensation inside your sensor callback so APA-Dose always receives a corrected reading. If the callback returns NaN or infinity:
+
 - The first bad reading sends `"Sensor:bad value"` once via `onStatusMessage`
 - The last known good value is kept — dosing and safety checks continue against it
 - The flag clears automatically when a finite value is received; the message fires again on the next transition to bad
@@ -1193,7 +1216,7 @@ Fires when the sensor has been on the wrong side of setpoint long enough that op
 
 **Dead-band correlation:** when a dead-band is configured, the same width `W` that suppresses dosing near setpoint is also applied on the opposite side as the alarm threshold. The diagram below shows a pH-PLUS pump (setpoint 7.4, band 1.0, dead-band 10%):
 
-```
+```text
 dead-band width W = 10% × 1.0 = 0.10 pH
 
 don't dose ◄──── W ────►│◄──── W ──── alarm fires after 30 min
@@ -1284,7 +1307,7 @@ ApaDoseTime getRTC() {
 
 Safety band uses dual protection — no user configuration needed:
 
-```
+```text
 safetyBand = min(proportionalBand × 1.5, hardCap)
 ```
 
@@ -1314,7 +1337,7 @@ After failed attempts, `applyFeedbackCorrections()` boosts PWM by 30% (1 failure
 
 ## EEPROM Layout
 
-```
+```text
 Address 0–127    Arduino / user application
 Address 128–144  APAPHX2_ADS1115 — pH calibration
 Address 145–160  APAPHX2_ADS1115 internal gap
