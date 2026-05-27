@@ -7,13 +7,14 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.17.1** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.17.3** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
 ## Key Features
 
 **Proportional dosing control**
+
 - **True proportional output** — both PWM speed and pulse duration scale continuously with error; never bang-bang on/off
 - **Closed-loop feedback** — 2 sensor readings averaged before each dose, 3 after; verifies the water actually moved toward setpoint
 - **Adaptive dose correction** — first failed dose gets +30 % PWM boost; second gets +50 % PWM and doubled pulse time (capped at 5 min); alarm fires only after three consecutive failures — no human intervention needed between attempts
@@ -26,6 +27,7 @@ Part of the **APA Devices** product family.
 - **Cross-settle coupling (A)** — `clPump.setCrossSettleMinutes(n)` holds CL dosing for N minutes after each pH dose, preventing the pH/ORP see-saw caused by acid doses temporarily depressing ORP during mixing; off by default; requires `setPhPump()` first
 
 **Safety**
+
 - **Full alarm system** — wrong direction, ineffective dose, safety band, daily dose limit, sensor fault (`ALARM_SENSOR_FAULT`) — all built-in and reported via callback or polling
 - **Filtration interlock** — dosing blocked the instant the filter stops; a running dose halts immediately; no chemical ever injected into stagnant water
 - **External stop** — optional callback from any external system (maintenance mode, backwash, cover) blocks all dosing immediately; a mandatory 5-minute settling time applies after the signal clears before dosing resumes
@@ -37,6 +39,7 @@ Part of the **APA Devices** product family.
 - **Startup blackout** — optional N-minute dosing hold after power-on (`blackoutMinutes` parameter in `begin()`); gives electrochemical sensors time to stabilize before the first dose decision; `isInStartupBlackout()` exposes the state for display
 
 **Flexibility**
+
 - **1 to 4 independent pumps** — each instance is a full isolated state machine with its own dosing cycle, feedback loop, alarm state, and EEPROM block
 - **Sensor-less pump support** — pass `nullptr` as the sensor callback for flocculant or algaecide pumps; filtration interlock, daily limit, and priming all remain active
 - **Solenoid valve support** — set `min == max` in `setPumpRange()` for time-proportional on/off control; no other code changes needed
@@ -47,6 +50,7 @@ Part of the **APA Devices** product family.
 - **Dosing window** — restrict automatic dosing to a configurable daily hour range via `setDosingWindow()`; manual doses and priming are unaffected
 
 **Monitoring**
+
 - **Chemical volume tracking** — `getDailyVolumeMl()` and `getLastDoseVolumeMl()` estimate consumption from actual pulse duration and PWM intensity; resets at midnight when an RTC is connected
 - **Tank level estimation** — two independent optional features, each usable alone: the **software path** (`setTankCapacity(litres)`) estimates remaining volume from dose pulses — no hardware sensor required; `getTankRemainingPct()` (0–100 %) and `getTankDaysUntilEmpty()` (rolling 7-day estimate in days; 255 = not enough data yet) update after every dose; `ALARM_TANK_EMPTY` fires when estimated consumption reaches capacity; the **hardware path** (`setTankEmptyCallback()`) fires `ALARM_TANK_EMPTY` instantly from a float switch or dry-contact sensor — see **Safety Systems → Chemical tank empty sensor**; **combined**, the hardware sensor is the sole alarm authority and the software estimation provides the percentage display — real-time alert from hardware, visual progress on a dashboard; `acknowledgeAlarm()` resets the consumed counter; disabled by default; persisted to EEPROM at midnight
 - **Dose counter** — `getDailyDoseCount()` tracks combined automatic and manual doses per day; resets every 24h — at real midnight with an RTC, every 24h from boot without one
@@ -54,6 +58,7 @@ Part of the **APA Devices** product family.
 - **System status snapshot** — `getSystemStatus(buf, size)` fills a caller-supplied buffer with a single-line summary of the current state (active alarms, dosing phase, sensor value, daily dose count); size `APA_DOSE_STATUS_BUFFER_SIZE` (96) is sufficient for the longest output
 
 **Engineering**
+
 - **EEPROM persistence** — setpoint, band, and dosing type survive power loss; magic-number and checksum validation on every boot with automatic fallback to safe defaults
 - **RTC scheduling** — optional: daily counter reset at midnight, dosing window by hour; library works fully without an RTC
 - **Non-blocking** — pure `millis()` state machine; zero `delay()` calls; safe to call every `loop()` iteration alongside any other code
@@ -98,7 +103,7 @@ The library is fully **non-blocking**. All timing uses `millis()`. Zero `delay()
 
 The user sets a **setpoint** (target value) and a **proportional band** (control range). The band defines the sensor range over which the pump output scales from minimum to maximum. Error is calculated as the distance from the setpoint, expressed as a percentage of the band.
 
-```
+```text
 pH-PLUS pump example  (setpoint 7.4,  band 1.0 pH)
 Doses when pH falls below setpoint — raises pH toward target.
 
@@ -123,7 +128,7 @@ Doses when pH falls below setpoint — raises pH toward target.
   Suppresses dosing within 10% of band from SP; exits at 5% (hysteresis).
 ```
 
-```
+```text
 pH-MINUS pump example  (setpoint 7.4,  band 1.0 pH)
 Doses when pH rises above setpoint — lowers pH toward target.
 
@@ -153,7 +158,7 @@ threshold    25 %      50 %      75 %                   100 %
 
 When a dead-band is configured, the same band width `W` is mirrored symmetrically on **both** sides of the setpoint. The dosing zone boundary (`SP − W` for a raising pump) is also the over-setpoint alarm threshold on the far side (`SP + W`). With dead-band disabled (`W = 0`), any persistent over-setpoint reading triggers the alarm.
 
-```
+```text
   pH-PLUS pump example  (setpoint 7.4, band 1.0, dead-band 10 %)
 
   dead-band width W = 10% × 1.0 = 0.10 pH
@@ -174,7 +179,7 @@ When a dead-band is configured, the same band width `W` is mirrored symmetricall
 
 Every automatic dose passes through six phases:
 
-```
+```text
   ┌──────────────────────────────────────────────────────────┐
   │                                                          │
   │  ① SAMPLE BEFORE     2 readings × 30 s apart             │
@@ -554,7 +559,7 @@ if (clPump.isShockActive()) {
 
 Call setup methods in this order — order matters on first boot:
 
-```
+```text
 1. setPumpRange()               calibrate motor dead band (optional, default 50–255)
                                 set min == max (e.g. 255, 255) for solenoid valves — see below
 2. setPumpFlowRate()            optional — pump output at max PWM in mL/min (default 450)
@@ -733,7 +738,7 @@ No subscriptions. No cloud dependency. No proprietary protocol. Full source code
 
 ## Files
 
-```
+```text
 APA-DOSING_LIB/
 ├── src/
 │   ├── APADOSE.h            Main header — all public types and API
