@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.17.0
+ * Version: 3.17.2
  * Author: kecup@vazac.eu (APA Devices)
  * Date: May 2026
  */
@@ -1435,8 +1435,9 @@ float            ApaDose::getCurrentSetpoint()         const { return setpoint; 
 float            ApaDose::getCurrentProportionalBand() const { return proportionalBand; }
 ApaDoseType      ApaDose::getCurrentDosingType()       const { return dosingType; }
 ApaDoseDirection ApaDose::getPhDirection()             const { return phDirection; }
-ApaDoseAlarm ApaDose::getCurrentAlarm()            const { return alarm.currentAlarm; }
-bool         ApaDose::isAlarmActive()              const { return flags.alarmActive; }
+ApaDoseAlarm ApaDose::getCurrentAlarm()              const { return alarm.currentAlarm; }
+bool         ApaDose::isAlarmActive()               const { return flags.alarmActive; }
+bool         ApaDose::alarmNeedsAcknowledgment()    const { return flags.alarmNeedsAck; }
 bool         ApaDose::isDosingActive()             const { return flags.dosingActive; }
 bool         ApaDose::isPrimingActive()            const { return flags.primingActive; }
 bool         ApaDose::isInStartupBlackout()        const { return startupBlackoutMinutes > 0 && (millis() - startupTime) < (unsigned long)startupBlackoutMinutes * 60000UL; }
