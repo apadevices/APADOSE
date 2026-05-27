@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.17.2] — 2026-05-27
+
+### Added
+
+- **`alarmNeedsAcknowledgment()`** — new status query that returns `true` when the currently
+  active alarm requires an explicit `acknowledgeAlarm()` call to clear. Returns `false` when
+  no alarm is active or when the active alarm clears automatically.
+  Latching alarms (return `true`): `ALARM_WRONG_DIRECTION`, `ALARM_INEFFECTIVE`,
+  `ALARM_TANK_EMPTY`, `ALARM_OFA`.
+  Auto-clearing alarms (return `false`): `ALARM_SAFETY_BAND`, `ALARM_SENSOR_FAULT`,
+  `ALARM_DAILY_LIMIT`, `ALARM_OVER_SETPOINT`.
+  Intended for GUI and display integrations that need to distinguish "show alert, require
+  user action" from "show status, clear automatically" without hardcoding the alarm list.
+
+---
+
 ## [3.17.1] — 2026-05-26
 
 ### Fixed
