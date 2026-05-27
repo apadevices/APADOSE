@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.17.1"
+#define APA_DOSE_VERSION "3.17.2"
 #define APA_DOSE_VERSION_MAJOR 3
 #define APA_DOSE_VERSION_MINOR 17
-#define APA_DOSE_VERSION_PATCH 1
+#define APA_DOSE_VERSION_PATCH 2
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -591,6 +591,7 @@ public:
   ApaDoseDirection getPhDirection()            const;
   ApaDoseAlarm getCurrentAlarm()           const;
   bool         isAlarmActive()             const;
+  bool         alarmNeedsAcknowledgment()  const;  // true when the active alarm requires acknowledgeAlarm() to clear
   bool         isDosingActive()            const;
   bool         isPrimingActive()           const;
   bool         isInStartupBlackout()       const;
