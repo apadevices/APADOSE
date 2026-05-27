@@ -1,6 +1,6 @@
 ﻿# APA-Dose Library — API Reference
 
-**Version**: 3.16.4  
+**Version**: 3.17.2  
 **File**: `APADOSE.h` / `APADOSE.cpp`
 
 ---
@@ -824,8 +824,9 @@ float            getCurrentProportionalBand()   const;
 ApaDoseType      getCurrentDosingType()         const;  // DOSE_PH or DOSE_CL
 ApaDoseDirection getPhDirection()               const;  // PH_PLUS or PH_MINUS; always PH_PLUS for DOSE_CL
 ApaDoseAlarm     getCurrentAlarm()              const;
-const char*   getAlarmMessage()                 const;  // alarm text; empty string if no alarm
+const char*      getAlarmMessage()              const;  // alarm text; empty string if no alarm
 bool             isAlarmActive()                const;
+bool             alarmNeedsAcknowledgment()     const;  // true when active alarm requires acknowledgeAlarm() — false if auto-clearing or no alarm
 bool             isDosingActive()               const;
 bool             isPrimingActive()              const;
 bool             isInStartupBlackout()          const;
