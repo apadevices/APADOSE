@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.17.3] — 2026-05-27
+
+### Changed
+
+- `docs/API.md` — fixed pre-existing markdown formatting warnings: added language tags to all
+  plain fenced code blocks (MD040), added blank lines after method headings and around fenced
+  blocks (MD022/MD031), and added blank lines around lists and tables (MD032). No API changes.
+- `README.md` — fixed MD040 (added `text` language to ASCII-art and diagram code blocks) and
+  MD032 (added blank lines between section headers and bullet lists in Key Features).
+- Added `.markdownlint.json` — suppresses MD024 (CHANGELOG duplicate sibling headings) and
+  disables MD013 (line length) for this API reference document where long prose lines are normal.
+
+---
+
 ## [3.17.2] — 2026-05-27
 
 ### Added
