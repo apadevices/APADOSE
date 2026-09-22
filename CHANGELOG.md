@@ -5,6 +5,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.17.6] — 2026-09-22
+
+### Fixed
+
+- **3.17.5's pH/CL interlock fix was incomplete — patched the wrong checkpoint.** Confirmed on real
+  hardware: two coupled pumps could still dose simultaneously after 3.17.5. Root cause:
+  `shouldStartDosing()` (where 3.17.5's live-peer check was added) doesn't actually start a dose
+  pulse — it only decides whether to enter a "before" sensor-sampling phase
+  (`startBeforeDosingMeasurements()`). The real commit point, where `startDosingPulse()` is actually
+  called, is later, inside `manageFeedbackSampling()`'s `FB_MEASURING_BEFORE` completion branch —
+  and that call site had its own small guard list (`flags.dosingActive`, `filterPumpRunning`,
+  `externalStop`) but never re-checked the coupled peer or the inter-pump lockout at all. Since
+  sample collection takes real time (several sample intervals), a peer that started dosing *during*
+  that window was never caught. Fixed by re-checking `lastAnyDoseEnd`, `_linkedPhPump`, and
+  `_linkedPeer` immediately before the actual `startDosingPulse()` call, not just at the earlier
+  "should I start watching" decision. No public API change.
+
+---
+
 ## [3.17.5] — 2026-09-22
 
 ### Fixed
