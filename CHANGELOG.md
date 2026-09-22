@@ -5,6 +5,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.17.4] — 2026-09-22
+
+### Fixed
+
+- **`begin()` was silently discarding a persisted `phDirection` on every boot.** For `DOSE_PH`
+  pumps, `begin()` unconditionally set `phDirection = dir` (the compile-time argument) immediately
+  after `loadConfiguration()` had already correctly restored the operator's last saved direction
+  from EEPROM — throwing that restored value away every time. Worse: when the loaded direction
+  differed from `dir`, `begin()` then called `saveConfiguration()`, permanently overwriting the
+  operator's EEPROM-stored choice with the sketch's hardcoded default — so a direction changed at
+  runtime via `setPhDirection()` (which already persisted correctly) would revert on the very next
+  boot and then stay reverted, since EEPROM itself had been rewritten back to the hardcoded value.
+  `phDirection` now follows the same "trust `loadConfiguration()` unless EEPROM was invalid or the
+  dosing type changed" rule that `setpoint`/`proportionalBand` already used correctly — `dir` is now
+  only ever a first-boot/type-change default, never re-applied over a live operator setting. No API
+  change; `setPhDirection()`'s behavior and signature are unchanged, it just now actually survives
+  a reboot as its own doc comment already claimed.
+
+---
+
 ## [3.17.3] — 2026-05-27
 
 ### Changed
