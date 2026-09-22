@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.17.4
+ * Version: 3.17.5
  * Author: kecup@vazac.eu (APA Devices)
  * Date: September 2026
  */
@@ -675,6 +675,15 @@ void ApaDose::manageFeedbackSampling() {
 
 bool ApaDose::shouldStartDosing() {
   if (lastAnyDoseEnd != 0 && millis() - lastAnyDoseEnd < INTER_PUMP_LOCKOUT_MS) return false;
+
+  // Never start while a coupled pH<->CL peer is CURRENTLY dosing -- lastAnyDoseEnd
+  // above only guards the 90s after a dose ENDS, so two pumps whose trigger
+  // conditions become true close together (neither having finished yet) could
+  // otherwise both start in the same window. Checked both directions: the CL
+  // side via _linkedPhPump (set by this instance's own setPhPump() call), the pH
+  // side via _linkedPeer (set automatically, reverse of the peer's setPhPump()).
+  if (_linkedPhPump != nullptr && _linkedPhPump->flags.dosingActive) return false;
+  if (_linkedPeer    != nullptr && _linkedPeer->flags.dosingActive)  return false;
 
   if (_linkedPhPump != nullptr) {
     // Option J — pH-first priority: suspend CL when pH too high for effective chlorination
@@ -1394,6 +1403,8 @@ bool ApaDose::triggerManualDose(unsigned long durationMs, unsigned long restMs) 
   if (externalStop      != nullptr && externalStop())       return false;
   if (externalStopClearedAt != 0)                           return false;
   if (lastAnyDoseEnd != 0 && millis() - lastAnyDoseEnd < INTER_PUMP_LOCKOUT_MS) return false;
+  if (_linkedPhPump != nullptr && _linkedPhPump->flags.dosingActive) return false;  // same live-peer check as shouldStartDosing()
+  if (_linkedPeer    != nullptr && _linkedPeer->flags.dosingActive)  return false;
 
   if (durationMs > MAX_MANUAL_DOSE_MS) {
     durationMs = MAX_MANUAL_DOSE_MS;
@@ -1458,7 +1469,10 @@ unsigned long ApaDose::getLastDosingTime()         const { return lastDosingEnd;
 unsigned long ApaDose::getLastDosingEnd()          const { return lastDosingEnd; }
 unsigned long ApaDose::getSecondsSinceLastDose()   const { return lastDosingEnd == 0 ? 0 : (millis() - lastDosingEnd) / 1000UL; }
 
-void ApaDose::setPhPump(ApaDose* phPump)             { _linkedPhPump = phPump; }
+void ApaDose::setPhPump(ApaDose* phPump) {
+  _linkedPhPump = phPump;
+  if (phPump != nullptr) phPump->_linkedPeer = this;   // reverse link -- see _linkedPeer's own comment
+}
 void ApaDose::setCrossSettleMinutes(uint8_t minutes) { _crossSettleMinutes = minutes; }
 
 void ApaDose::setEfficiencyThreshold(uint8_t pct) {
