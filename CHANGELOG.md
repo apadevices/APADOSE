@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.17.5] — 2026-09-22
+
+### Fixed
+
+- **`shouldStartDosing()`/`triggerManualDose()` could let a coupled pH and CL pump dose
+  simultaneously.** The existing inter-pump lockout (`INTER_PUMP_LOCKOUT_MS`) only blocked a new
+  dose from starting within 90s after any pump's *previous* dose *ended* — it did nothing to stop
+  two pumps whose trigger conditions became true close together, before either had finished, from
+  starting concurrently. Real consequence: acid and chlorine could be dosed at the same physical
+  inlet at the same time, exactly what the documented interlock is meant to prevent. Fixed by
+  adding a live "is my coupled peer currently dosing" check on both sides: `setPhPump()` now also
+  registers a reverse link (`_linkedPeer`, internal, no new public API) so the pH instance knows
+  about its CL peer just as the CL instance already knew about its pH peer via `_linkedPhPump`.
+  Both `shouldStartDosing()` and `triggerManualDose()` now refuse to start while the linked peer's
+  `flags.dosingActive` is true, closing the race regardless of call order or which pump's condition
+  triggers first. `triggerPrime()` is intentionally unchanged — it documents itself as bypassing all
+  safety guards. No public API change; `setPhPump(ApaDose*)`'s signature and calling convention are
+  identical. Scales to any pump count: this is a pairwise pH<->CL relationship, unaffected by
+  flocculant/algaecide instances that never call `setPhPump()`.
+
+---
+
 ## [3.17.4] — 2026-09-22
 
 ### Fixed
