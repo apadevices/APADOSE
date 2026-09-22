@@ -11,7 +11,7 @@
  * - EEPROM persistent storage
  * - Hardware-agnostic callback interface
  *
- * Version: 3.17.4
+ * Version: 3.17.5
  * Author: kecup@vazac.eu (APA Devices)
  * Date: September 2026
  */
@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.17.4"
+#define APA_DOSE_VERSION "3.17.5"
 #define APA_DOSE_VERSION_MAJOR 3
 #define APA_DOSE_VERSION_MINOR 17
-#define APA_DOSE_VERSION_PATCH 4
+#define APA_DOSE_VERSION_PATCH 5
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -341,6 +341,15 @@ private:
   // pH-first priority (J) and cross-settle coupling (A) — per-instance, setup-time only
   ApaDose* _linkedPhPump       = nullptr;  // nullptr = both features disabled
   uint8_t  _crossSettleMinutes = 0;        // 0 = Option A disabled
+
+  // Reverse of _linkedPhPump, set automatically by the peer's own setPhPump() call
+  // (not a public API -- no new setter needed). Lets the pH instance itself also
+  // hold off starting a new dose while its coupled non-pH peer is actively dosing,
+  // not just the other way around -- closes a same-cycle race the old one-directional
+  // link couldn't see. Single pointer, not a list: only one pH<->non-pH pair is
+  // assumed coupled at a time (matches the documented DOSE_PH/DOSE_CL pairing --
+  // flocculant/algaecide instances never call setPhPump() and are unaffected).
+  ApaDose* _linkedPeer = nullptr;
 
   // Startup blackout
   uint8_t       startupBlackoutMinutes;  // 0 = disabled; stored as minutes to save 3 bytes vs unsigned long
