@@ -121,15 +121,17 @@ bool ApaDose::begin(SensorReadCallback sensorReader, FilterCallback filter,
   ApaDoseType      loadedType = dosingType;
   ApaDoseDirection loadedDir  = phDirection;
 
-  dosingType  = type;
-  phDirection = (type == DOSE_PH) ? dir : PH_PLUS;  // direction meaningless for DOSE_CL
-  bool orp    = isOrpProfile();
+  dosingType = type;
+  bool orp   = isOrpProfile();
 
   if (!eepromValid) {
+    phDirection = (type == DOSE_PH) ? dir : PH_PLUS;  // direction meaningless for DOSE_CL
     resetToDefaults();
     saveConfiguration();
   } else if (loadedType != type) {
-    // Type changed: clamp setpoint/band to the new type's valid range
+    // Type changed: old direction is meaningless for the new type, fall back to the
+    // caller's default. Also clamp setpoint/band to the new type's valid range.
+    phDirection = (type == DOSE_PH) ? dir : PH_PLUS;
     if (setpoint < (orp ? ORP_SETPOINT_MIN : PH_SETPOINT_MIN) ||
         setpoint > (orp ? ORP_SETPOINT_MAX : PH_SETPOINT_MAX))
       setpoint = orp ? ORP_SETPOINT_DEFAULT : PH_SETPOINT_DEFAULT;
@@ -137,8 +139,13 @@ bool ApaDose::begin(SensorReadCallback sensorReader, FilterCallback filter,
         proportionalBand > (orp ? ORP_BAND_MAX : PH_BAND_MAX))
       proportionalBand = orp ? ORP_BAND_DEFAULT : PH_BAND_DEFAULT;
     saveConfiguration();
-  } else if (type == DOSE_PH && loadedDir != dir) {
-    saveConfiguration();  // direction changed — persist it
+  } else {
+    // EEPROM valid and type unchanged -- trust what loadConfiguration() already restored,
+    // exactly like setpoint/proportionalBand above. phDirection is runtime-owned via
+    // setPhDirection() (which already persists correctly); begin()'s own `dir` argument
+    // is only ever a first-boot/type-change default, never a value re-applied on every
+    // boot over a live operator setting.
+    phDirection = (type == DOSE_PH) ? loadedDir : PH_PLUS;
   }
   flags.configurationValid = true;
 
