@@ -1,9 +1,9 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.17.3
+ * Version: 3.17.4
  * Author: kecup@vazac.eu (APA Devices)
- * Date: May 2026
+ * Date: September 2026
  */
 
 #include "APADOSE.h"
