@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.17.5
+ * Version: 3.17.6
  * Author: kecup@vazac.eu (APA Devices)
  * Date: September 2026
  */
@@ -646,6 +646,16 @@ void ApaDose::manageFeedbackSampling() {
       if (filterPumpRunning != nullptr && !filterPumpRunning()) return;
       if (externalStop      != nullptr && externalStop())       return;
       if (externalStopClearedAt != 0)                           return;
+      // Re-check the same interlock shouldStartDosing() checked when this
+      // "before" measurement phase began -- collectSample() takes real time
+      // (several sample intervals), so the coupled peer's dosing state and the
+      // inter-pump lockout must be re-verified right before actually starting
+      // the pump, not just when we started watching. Without this, a peer that
+      // began dosing DURING the sampling window was never caught -- the actual
+      // pulse-start call site had no interlock of its own at all.
+      if (lastAnyDoseEnd != 0 && millis() - lastAnyDoseEnd < INTER_PUMP_LOCKOUT_MS) return;
+      if (_linkedPhPump != nullptr && _linkedPhPump->flags.dosingActive) return;
+      if (_linkedPeer    != nullptr && _linkedPeer->flags.dosingActive)  return;
       DosingPulse pulse = calculateProportionalPulse();
       if (pulse.pwmIntensity > 0) startDosingPulse(pulse);
     }
