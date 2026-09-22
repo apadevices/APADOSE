@@ -11,7 +11,7 @@
  * - EEPROM persistent storage
  * - Hardware-agnostic callback interface
  *
- * Version: 3.17.5
+ * Version: 3.17.6
  * Author: kecup@vazac.eu (APA Devices)
  * Date: September 2026
  */
@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.17.5"
+#define APA_DOSE_VERSION "3.17.6"
 #define APA_DOSE_VERSION_MAJOR 3
 #define APA_DOSE_VERSION_MINOR 17
-#define APA_DOSE_VERSION_PATCH 5
+#define APA_DOSE_VERSION_PATCH 6
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
