@@ -5,6 +5,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.17.7] — 2026-09-23
+
+### Fixed
+
+- **pH-first priority (Option J) and cross-settle (Option A) were only checked at the start of the
+  "before" sensor-sampling phase, not re-verified at the actual dose-commit point.** Same class of
+  gap as 3.17.6's interlock fix, found while designing cross-settle's real-world use before ever
+  enabling it: `shouldStartDosing()` checks `getProbeValue() > CL_PH_MAX` and the cross-settle
+  timer once, before entering `FB_MEASURING_BEFORE` (a sampling window that takes real time — up to
+  ~60s at default settings). If pH crossed `CL_PH_MAX` *during* that window, or a pH dose both
+  started and ended within it (resetting the settle timer) without ever setting
+  `_linkedPhPump->flags.dosingActive` long enough for the plain interlock re-check to catch it, the
+  CL pulse could still fire at the `manageFeedbackSampling()` commit point with stale J/A state.
+  Fixed by extracting the Option J/A logic out of `shouldStartDosing()` into a new private helper,
+  `checkPhCoupling()`, and calling it from both `shouldStartDosing()` and the actual
+  `startDosingPulse()` commit point in `manageFeedbackSampling()`. This also removes a duplicate-
+  logic footprint risk (one source of truth for J/A instead of two copies that could drift). No
+  public API change. Build-verified clean on all 5 platforms (Uno, Mega, ESP32, ESP8266, STM32).
+
+---
+
 ## [3.17.6] — 2026-09-22
 
 ### Fixed
