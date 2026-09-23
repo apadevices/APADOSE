@@ -7,7 +7,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.17.7** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.17.8** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
