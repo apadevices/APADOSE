@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.17.6
+ * Version: 3.17.7
  * Author: kecup@vazac.eu (APA Devices)
  * Date: September 2026
  */
@@ -656,6 +656,11 @@ void ApaDose::manageFeedbackSampling() {
       if (lastAnyDoseEnd != 0 && millis() - lastAnyDoseEnd < INTER_PUMP_LOCKOUT_MS) return;
       if (_linkedPhPump != nullptr && _linkedPhPump->flags.dosingActive) return;
       if (_linkedPeer    != nullptr && _linkedPeer->flags.dosingActive)  return;
+      // Options J/A can also go stale during the sampling window (pH crossed
+      // CL_PH_MAX, or a fresh pH dose both started and ended, resetting the
+      // settle timer) without ever setting _linkedPhPump->flags.dosingActive
+      // long enough for the check above to catch it -- re-verify explicitly.
+      if (!checkPhCoupling()) return;
       DosingPulse pulse = calculateProportionalPulse();
       if (pulse.pwmIntensity > 0) startDosingPulse(pulse);
     }
@@ -695,40 +700,7 @@ bool ApaDose::shouldStartDosing() {
   if (_linkedPhPump != nullptr && _linkedPhPump->flags.dosingActive) return false;
   if (_linkedPeer    != nullptr && _linkedPeer->flags.dosingActive)  return false;
 
-  if (_linkedPhPump != nullptr) {
-    // Option J — pH-first priority: suspend CL when pH too high for effective chlorination
-    if (_linkedPhPump->getProbeValue() > CL_PH_MAX) {
-      if (!flags.phHoldSent) {
-        sendStatus(onStatusMessage, F("CL held: pH high"));
-        flags.phHoldSent = true;
-      }
-      flags.settleHoldSent = false;
-      return false;
-    }
-    if (flags.phHoldSent) {
-      sendStatus(onStatusMessage, F("CL resumed: pH OK"));
-      flags.phHoldSent = false;
-    }
-
-    // Option A — cross-settle: hold CL after a pH dose to let chemistry equilibrate
-    if (_crossSettleMinutes > 0) {
-      unsigned long phLastDose = _linkedPhPump->getLastDosingEnd();
-      if (phLastDose != 0) {
-        unsigned long settleMs = (unsigned long)_crossSettleMinutes * 60000UL;
-        if ((long)(millis() - phLastDose) < (long)settleMs) {
-          if (!flags.settleHoldSent) {
-            sendStatus(onStatusMessage, F("CL held: settling"));
-            flags.settleHoldSent = true;
-          }
-          return false;
-        }
-      }
-      if (flags.settleHoldSent) {
-        sendStatus(onStatusMessage, F("CL resumed: settled"));
-        flags.settleHoldSent = false;
-      }
-    }
-  }
+  if (!checkPhCoupling()) return false;
 
   if (s_deadbandPct > 0) {
     uint8_t exitPct = (s_deadbandPct > 5) ? (s_deadbandPct - 5) : 0;
@@ -749,6 +721,50 @@ bool ApaDose::shouldStartDosing() {
   float threshold = isOrpProfile() ? ORP_FEEDBACK_THRESHOLD : PH_FEEDBACK_THRESHOLD;
   if (dosesUp()) return sensorValue < (setpoint - threshold);
   return sensorValue > (setpoint + threshold);
+}
+
+// Options J (pH-first priority) + A (cross-settle) — shared by shouldStartDosing() (gates
+// entering the "before" sampling phase) and manageFeedbackSampling()'s pulse-commit point
+// (gates actually firing, after sampling took real time). A single helper means both
+// checkpoints can never drift out of sync again -- the same class of gap already found once
+// between shouldStartDosing() and the commit point for the plain interlock checks.
+bool ApaDose::checkPhCoupling() {
+  if (_linkedPhPump == nullptr) return true;
+
+  // Option J — pH-first priority: suspend CL when pH too high for effective chlorination
+  if (_linkedPhPump->getProbeValue() > CL_PH_MAX) {
+    if (!flags.phHoldSent) {
+      sendStatus(onStatusMessage, F("CL held: pH high"));
+      flags.phHoldSent = true;
+    }
+    flags.settleHoldSent = false;
+    return false;
+  }
+  if (flags.phHoldSent) {
+    sendStatus(onStatusMessage, F("CL resumed: pH OK"));
+    flags.phHoldSent = false;
+  }
+
+  // Option A — cross-settle: hold CL after a pH dose to let chemistry equilibrate
+  if (_crossSettleMinutes > 0) {
+    unsigned long phLastDose = _linkedPhPump->getLastDosingEnd();
+    if (phLastDose != 0) {
+      unsigned long settleMs = (unsigned long)_crossSettleMinutes * 60000UL;
+      if ((long)(millis() - phLastDose) < (long)settleMs) {
+        if (!flags.settleHoldSent) {
+          sendStatus(onStatusMessage, F("CL held: settling"));
+          flags.settleHoldSent = true;
+        }
+        return false;
+      }
+    }
+    if (flags.settleHoldSent) {
+      sendStatus(onStatusMessage, F("CL resumed: settled"));
+      flags.settleHoldSent = false;
+    }
+  }
+
+  return true;
 }
 
 DosingPulse ApaDose::calculateProportionalPulse() {
