@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.17.7
+ * Version: 3.17.8
  * Author: kecup@vazac.eu (APA Devices)
  * Date: September 2026
  */
@@ -1042,6 +1042,20 @@ void ApaDose::checkAlarmClearConditions() {
     case ALARM_OFA:
       canClear = true;  // ACK is sufficient; counter resets in clearAlarm()
       break;
+    case ALARM_OVER_SETPOINT: {
+      // Same condition readSensors() already uses for its own dedicated auto-clear
+      // (line ~315) -- must match exactly, or a consumer that polls acknowledgeAlarm()
+      // for every non-ACK alarm (a reasonable, documented pattern; see the
+      // ALARM_SAFETY_BAND case above, which genuinely needs that poll since it has no
+      // other re-check path) will clear this alarm unconditionally the instant it's
+      // called, regardless of whether the reading is still on the wrong side of
+      // setpoint. Found 2026-09-23 via real hardware: fired correctly at 30 min, then
+      // cleared ~1s later while pH was still 0.26 above setpoint, because this case was
+      // missing and fell through to the unconditional `default`.
+      float delta = dosesUp() ? (setpoint - sensorValue) : (sensorValue - setpoint);
+      canClear = (delta >= -(s_deadbandPct / 100.0f) * proportionalBand);
+      break;
+    }
     default:
       canClear = true;
       break;
