@@ -5,6 +5,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.17.8] — 2026-09-23
+
+### Fixed
+
+- **`ALARM_OVER_SETPOINT` fired correctly, then self-cleared about a second later, every time.**
+  Confirmed on real hardware: the alarm's own trigger logic (`checkOverSetpoint()`) worked exactly
+  as designed, firing right at the 30-minute mark while pH sat continuously on the wrong side of
+  setpoint. But `checkAlarmClearConditions()` — the function `acknowledgeAlarm()` calls — had
+  explicit, condition-correct cases for `ALARM_SAFETY_BAND`, `ALARM_SENSOR_FAULT`, and `ALARM_OFA`,
+  but no case for `ALARM_OVER_SETPOINT`, so it fell through to `default: canClear = true`, clearing
+  unconditionally regardless of whether the reading was still out of range. Any consumer following
+  the documented pattern of polling `acknowledgeAlarm()` for non-ACK alarms every cycle (needed for
+  `ALARM_SAFETY_BAND`, which has no other re-check path) would trigger this immediately after every
+  legitimate fire. Fixed by adding `case ALARM_OVER_SETPOINT:`, re-evaluating the identical
+  `delta >= -mirrorW` condition `readSensors()`'s own dedicated auto-clear already uses correctly —
+  that check was never the problem and was never touched. No public API change. Build-verified
+  clean on all 5 platforms (Uno, Mega, ESP32, ESP8266, STM32).
+
+---
+
 ## [3.17.7] — 2026-09-23
 
 ### Fixed
