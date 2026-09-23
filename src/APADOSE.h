@@ -11,7 +11,7 @@
  * - EEPROM persistent storage
  * - Hardware-agnostic callback interface
  *
- * Version: 3.17.6
+ * Version: 3.17.7
  * Author: kecup@vazac.eu (APA Devices)
  * Date: September 2026
  */
@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.17.6"
+#define APA_DOSE_VERSION "3.17.7"
 #define APA_DOSE_VERSION_MAJOR 3
 #define APA_DOSE_VERSION_MINOR 17
-#define APA_DOSE_VERSION_PATCH 6
+#define APA_DOSE_VERSION_PATCH 7
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -447,6 +447,9 @@ private:
   void         manageScheduledDose();
   bool         collectSample(unsigned long now, char prefix);
   bool         shouldStartDosing();
+  bool         checkPhCoupling();   // Options J+A -- shared by shouldStartDosing() and the
+                                     // manageFeedbackSampling() pulse-commit point, so both
+                                     // checkpoints can never drift out of sync again
   DosingPulse  calculateProportionalPulse();
   void         startDosingPulse(DosingPulse pulse);
   void         stopDosingPulse();
