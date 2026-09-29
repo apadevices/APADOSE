@@ -68,7 +68,7 @@ const uint16_t LONG_PRESS_MS     = 2000;
 // sizeof(ConfigData) = 22 bytes. Without unique addresses both pumps would overwrite
 // the same bytes and corrupt each other's saved configuration on every boot.
 ApaDose phPump(PIN_PH_PUMP);                                                // EEPROM 192 (default)
-ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 214
+ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 217
 
 float getpH()         { return 7.2; /* replace */ }
 float getORP()        { return 640; /* replace */ }

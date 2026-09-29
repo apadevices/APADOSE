@@ -1,6 +1,6 @@
 ﻿# APA-Dose Library — API Reference
 
-**Version**: 3.17.8  
+**Version**: 3.18.0  
 **File**: `APADOSE.h` / `APADOSE.cpp`
 
 ---
@@ -107,13 +107,13 @@ Single hardware pin per pump, switched through a MOSFET (`analogWrite` only).
 
 `eepromAddress` is the EEPROM base address where this instance stores its configuration.  
 Single-pump sketches can omit it — the default (192) is used.  
-Multi-pump sketches **must** pass a unique address per pump; space them by `sizeof(ConfigData)` bytes (20 bytes on all platforms):
+Multi-pump sketches **must** pass a unique address per pump; space them by `sizeof(ConfigData)` bytes (25 bytes on all platforms):
 
 ```cpp
 ApaDose phPump  (PIN_PH_PUMP);                                            // EEPROM 192 (default)
-ApaDose clPump  (PIN_CL_PUMP,   APA_DOSE_EEPROM_ADDRESS +     sizeof(ConfigData));  // EEPROM 212
-ApaDose flocPump(PIN_FLOC_PUMP, APA_DOSE_EEPROM_ADDRESS + 2 * sizeof(ConfigData));  // EEPROM 232
-ApaDose algiPump(PIN_ALGI_PUMP, APA_DOSE_EEPROM_ADDRESS + 3 * sizeof(ConfigData));  // EEPROM 252
+ApaDose clPump  (PIN_CL_PUMP,   APA_DOSE_EEPROM_ADDRESS +     sizeof(ConfigData));  // EEPROM 217
+ApaDose flocPump(PIN_FLOC_PUMP, APA_DOSE_EEPROM_ADDRESS + 2 * sizeof(ConfigData));  // EEPROM 242
+ApaDose algiPump(PIN_ALGI_PUMP, APA_DOSE_EEPROM_ADDRESS + 3 * sizeof(ConfigData));  // EEPROM 267
 ```
 
 > The constant `APA_DOSE_EEPROM_ADDRESS` (192) is defined in `APADOSE.h`. The companion
@@ -242,6 +242,39 @@ The 5-minute settling time (`EXTERNAL_STOP_RESUME_MS`) is hardcoded. It prevents
 `isExternalStopActive()` returns the cached state evaluated by the last `update()` call.
 
 ---
+
+### `setFilterSettleMinutes()`
+
+```cpp
+void setFilterSettleMinutes(uint8_t minutes);   // 0–60 (FILTER_SETTLE_MAX_MIN); 0 = off (default)
+bool isFilterSettling() const;
+```
+
+After the filtration pump starts, the water around the probe is what stood in the pipe while the
+pump was off. This setting makes the library wait `minutes` after **every** filter pump start
+(off → on of the `FilterCallback`, and at boot while the pump already runs) before any dosing
+decision that reads the probe.
+
+| Held during the settle | Not held |
+|------------------------|----------|
+| Automatic proportional dosing (also re-checked right before a pulse starts) | `triggerManualDose()` — fixed amount |
+| `triggerShock()` — returns `false` | `triggerPrime()` — bypasses all checks |
+| `setScheduledDose()` with a threshold (skipped for that day if its minute falls inside the settle) | `setScheduledDose()` on a sensor-less pump or with threshold `0.0` |
+
+- A pulse that is already running is never interrupted by the settle.
+- Alarm checks (safety band, over-setpoint) keep evaluating readings during the settle.
+- Status: `"Filter settling"` once when the wait starts, `"Filter settled"` when it ends.
+- `isFilterSettling()` returns `true` during the wait; `false` when off, when the filter is off,
+  or when the feature is disabled.
+- Requires a `FilterCallback` in `begin()`. Setup-time value, not saved to EEPROM. `millis()`-based,
+  no RTC needed; safe across the ~49.7-day `millis()` rollover.
+- Independent of the startup blackout (electrode warm-up after power-on) — both can be used; the
+  longer one wins.
+
+```cpp
+phPump.setFilterSettleMinutes(10);   // typical home pool
+clPump.setFilterSettleMinutes(10);
+```
 
 ### `setPhPump()` / `setCrossSettleMinutes()`
 
@@ -854,6 +887,7 @@ bool             isPrimingActive()              const;
 bool             isInStartupBlackout()          const;
 bool             isExternalStopActive()         const;  // true if external stop was active at last update()
 bool             isInExternalStopResumeDelay()  const;  // true during the mandatory 5-min settling wait after external stop clears
+bool             isFilterSettling()             const;  // true while waiting after a filter pump start
 bool             isOutsideDosingWindow()        const;  // true if dosing window enabled and current hour is outside it (requires RTC callback)
 bool             isConfigurationValid()         const;
 unsigned long    getLastDosingTime()            const;  // millis() when last dose ended (same as getLastDosingEnd)
@@ -878,6 +912,7 @@ These three queries cover all internal blocking states that are not derivable fr
 | `isInStartupBlackout()` | Still within the startup delay after boot | non-zero `blackoutMinutes` in `begin()` |
 | `isExternalStopActive()` | External stop callback currently returns `true` | `setExternalStopCallback()` |
 | `isInExternalStopResumeDelay()` | External stop cleared but 5-min settling not yet elapsed | `setExternalStopCallback()` |
+| `isFilterSettling()` | Filter pump started less than N minutes ago | `setFilterSettleMinutes(n)`, `n > 0` |
 | `isOutsideDosingWindow()` | Dosing window enabled and current hour is outside it | `setDosingWindow()` + RTC callback |
 
 `getDailyDoseCount()` increments on every dose (manual or automatic). Reset behaviour depends on whether an RTC callback is registered:
@@ -1023,6 +1058,8 @@ This guards against a cable fault or ADC power loss that freezes `sensorValue` a
 ### Filter-off notification
 
 When a `FilterCallback` is registered, the library tracks continuous filter-off time using `millis()`. After `FILTER_OFF_ALARM_MS` (30 minutes) of uninterrupted filter-off, a single `"Filter off>30min"` message is sent via `onStatusMessage`. The timer resets as soon as the filter comes back on, so the message fires again if the filter goes off for another 30-minute stretch. No RTC is required — timing is purely `millis()`-based.
+
+**Feedback skipped.** Each dose is judged by readings taken some minutes after it. If the filter stops before that measurement is complete, the probe sits in still water and the reading says nothing about the dose, so the result is discarded: no failed-attempt or wrong-direction count, no dose-effectiveness or adaptive-band learning. Status `"Feedback skipped"`. The next dose is judged normally.
 
 ---
 
@@ -1342,9 +1379,10 @@ Address 0–127    Arduino / user application
 Address 128–144  APAPHX2_ADS1115 — pH calibration
 Address 145–160  APAPHX2_ADS1115 internal gap
 Address 161–177  APAPHX2_ADS1115 — ORP calibration
-Address 178–191  safety gap
-Address 192+     APA-Dose configuration (this library); sizeof(ConfigData) = 20 bytes
-Address 212+     second pump instance; 232+ third; 252+ fourth
+Address 178–188  safety gap
+Address 189–191  APA-Dose global slot (pool volume, dead-band, marker)
+Address 192+     APA-Dose configuration (this library); sizeof(ConfigData) = 25 bytes
+Address 217+     second pump instance; 242+ third; 267+ fourth (ends at 291)
 ```
 
 Write method: `EEPROM.put()` — works on all supported platforms; ESP8266/ESP32 `EEPROM.begin()` and `EEPROM.commit()` are called automatically.  

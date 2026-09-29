@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.18.0] — 2026-09-29
+
+### Added
+
+- **Filter restart settle — `setFilterSettleMinutes(minutes)` / `isFilterSettling()`.** While the filtration pump is off, the water around the probe stands still in the pipe; right after the pump starts again the probe reads that old water, not the pool. The library had no wait for this: the startup blackout only covers power-up, and the filtration interlock releases the moment the pump runs, so a pool whose filter pump runs on a timer could get a dose decided on stale readings at every daily pump start. Now, after every filter pump start (and at boot while the pump runs), dosing that reads the probe waits the configured minutes: proportional dosing (also re-checked right before a pulse starts), `triggerShock()`, and `setScheduledDose()` with a threshold. Fixed-amount doses are not held: `triggerManualDose()`, `triggerPrime()`, and scheduled doses on sensor-less pumps or with threshold `0.0`. A running pulse is never interrupted. Status messages `"Filter settling"` / `"Filter settled"`. Range 0–60 min (`FILTER_SETTLE_MAX_MIN`), **default 0 = off** — existing sketches behave exactly as before. Requires a `FilterCallback`. 5 bytes SRAM per instance; no EEPROM change (config version stays 6). Safe across the ~49.7-day `millis()` rollover. Found while adding a filtration schedule to APA-CONTROLLER. New README section for basic users: "Filter restart settle — when your filter pump runs on a timer".
+
+### Fixed
+
+- **A dose could be judged from still water when the filter stopped before its result was measured.** The "after" feedback measurement (taken some minutes after each dose) never checked the filter pump. If the pump stopped in between — normal when it runs on a timer — the probe was read in standing water and the dose was judged anyway: it could count as a failed or wrong-direction dose (after three, the latching `ALARM_INEFFECTIVE` / `ALARM_WRONG_DIRECTION`), skew the dose-effectiveness baseline, and nudge the adaptive band (saved to EEPROM). Now that result is discarded as inconclusive — no counts, no learning — with the status message `"Feedback skipped"`; the next dose is judged normally.
+- Stale EEPROM address comments in README, `docs/API.md` and eight examples (`// EEPROM 212/232/252`, "20 bytes", "192 – 271") — `ConfigData` has been 25 bytes since config version 6; correct values are 217 / 242 / 267, ending at 291. The address *expressions* in the code were always correct. `docs/API.md`'s EEPROM map also now shows the global slot at 189–191.
+
 ## [3.17.8] — 2026-09-23
 
 ### Fixed

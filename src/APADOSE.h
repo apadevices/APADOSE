@@ -11,7 +11,7 @@
  * - EEPROM persistent storage
  * - Hardware-agnostic callback interface
  *
- * Version: 3.17.8
+ * Version: 3.18.0
  * Author: kecup@vazac.eu (APA Devices)
  * Date: September 2026
  */
@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.17.8"
+#define APA_DOSE_VERSION "3.18.0"
 #define APA_DOSE_VERSION_MAJOR 3
-#define APA_DOSE_VERSION_MINOR 17
-#define APA_DOSE_VERSION_PATCH 8
+#define APA_DOSE_VERSION_MINOR 18
+#define APA_DOSE_VERSION_PATCH 0
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -112,6 +112,11 @@ constexpr uint32_t OVER_SETPOINT_DELAY_MS = 1800000UL;  // 30 min
 // Prevents a dose from firing immediately when an operator toggles between filtration
 // modes quickly — water may still be diverted or stationary during the transition.
 constexpr unsigned long EXTERNAL_STOP_RESUME_MS = 5UL * 60UL * 1000UL;  // 5 minutes
+
+// Filter restart settle — upper limit for setFilterSettleMinutes().
+// After the filtration pump starts, the water at the probe is what sat in the pipe while the
+// pump was off; probe-based dosing waits this long for circulated pool water to arrive.
+constexpr uint8_t FILTER_SETTLE_MAX_MIN = 60;
 
 // pH bounds for chlorine operations — applies to shock mode and pH-first priority guard (Option J).
 // Below CL_PH_MIN: water too acidic for efficient Cl oxidation.
@@ -314,6 +319,7 @@ private:
     bool dofaDisabled        : 1;  // disableDOFA() sets this; suppresses all dOFA checks
     bool dofaWarningSent     : 1;  // rate-limits dOFA 150% warning — reset at midnight
     bool overSetpointFired   : 1;  // prevents re-trigger while ALARM_OVER_SETPOINT is active
+    bool filterSettleSent    : 1;  // rate-limits "Filter settling" status message (24th bit — 3 bytes full)
   } flags;
 
   // System state
@@ -341,6 +347,10 @@ private:
   // pH-first priority (J) and cross-settle coupling (A) — per-instance, setup-time only
   ApaDose* _linkedPhPump       = nullptr;  // nullptr = both features disabled
   uint8_t  _crossSettleMinutes = 0;        // 0 = Option A disabled
+
+  // Filter restart settle — setup-time only, not persisted
+  uint8_t       _filterSettleMinutes = 0;  // 0 = disabled (default)
+  unsigned long _filterOnSince       = 0;  // millis() when the filter was last seen starting; 0 = filter off
 
   // Reverse of _linkedPhPump, set automatically by the peer's own setPhPump() call
   // (not a public API -- no new setter needed). Lets the pH instance itself also
@@ -445,6 +455,7 @@ private:
   void         manageProportionalDosing();
   void         manageFeedbackSampling();
   void         manageScheduledDose();
+  void         trackFilterSettle();  // stamps _filterOnSince on each filter start — runs every update()
   bool         collectSample(unsigned long now, char prefix);
   bool         shouldStartDosing();
   bool         checkPhCoupling();   // Options J+A -- shared by shouldStartDosing() and the
@@ -504,6 +515,13 @@ public:
   // Both features are inert (nullptr default) — omit for pH-only or independent setups.
   void setPhPump(ApaDose* phPump);
   void setCrossSettleMinutes(uint8_t minutes);
+  // Filter restart settle — after the filtration pump starts (and at boot), wait this many
+  // minutes before any dosing decision that reads the probe: proportional dosing, shock, and
+  // a scheduled dose that uses a threshold. Fixed-amount doses are NOT held: triggerManualDose(),
+  // triggerPrime(), and scheduled doses on sensor-less pumps or with threshold 0.
+  // 0-60 min (FILTER_SETTLE_MAX_MIN); 0 = off (default). Needs a FilterCallback in begin().
+  // Typical: 10 min. Call in setup(); not saved to EEPROM.
+  void setFilterSettleMinutes(uint8_t minutes);
   bool begin(SensorReadCallback sensorReader,
              FilterCallback   filter,
              ApaDoseType      type,
@@ -609,6 +627,7 @@ public:
   bool         isInStartupBlackout()       const;
   bool         isExternalStopActive()           const;  // true if external stop callback is registered and currently returning true
   bool         isInExternalStopResumeDelay()    const;  // true during the mandatory 5-min settling wait after external stop clears
+  bool         isFilterSettling()               const;  // true while waiting setFilterSettleMinutes() after the filter pump started
   bool         isOutsideDosingWindow()          const;  // true if dosing window is enabled and current hour is outside it
   bool         isConfigurationValid()           const;
   unsigned long getLastDosingTime()        const;  // millis() when last dose ended (alias kept for compatibility)

@@ -37,7 +37,7 @@ const uint8_t PIN_BUZZER       = 8;
 // sizeof(ConfigData). Without unique addresses both pumps would overwrite
 // the same bytes and corrupt each other's saved configuration on every boot.
 ApaDose           phPump(PIN_PH_PUMP);                                                // EEPROM 192 (default)
-ApaDose           clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 212
+ApaDose           clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 217
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 
 float getpH()         { return 7.2; /* replace */ }

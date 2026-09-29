@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.17.8
+ * Version: 3.18.0
  * Author: kecup@vazac.eu (APA Devices)
  * Date: September 2026
  */
@@ -245,6 +245,8 @@ void ApaDose::setTankCapacity(uint8_t liters) {
 // ---------------------------------------------------------------------------
 
 void ApaDose::update() {
+  trackFilterSettle();  // before every early return, so no filter start is ever missed
+
   if (flags.primingActive) {
     if (millis() - primingStartTime >= primingDuration) {
       analogWrite(pumpPin, 0);
@@ -407,6 +409,22 @@ void ApaDose::manageProportionalDosing() {
     }
     startupBlackoutMinutes = 0;
     sendStatus(onStatusMessage, F("Dosing enabled"));
+  }
+
+  // Filter restart settle — hold new probe-based doses until circulated water reaches the
+  // probe. Never blocks a pulse already running (its stop logic below must still run).
+  if (!flags.dosingActive) {
+    if (isFilterSettling()) {
+      if (!flags.filterSettleSent) {
+        sendStatus(onStatusMessage, F("Filter settling"));
+        flags.filterSettleSent = true;
+      }
+      return;
+    }
+    if (flags.filterSettleSent) {
+      flags.filterSettleSent = false;
+      sendStatus(onStatusMessage, F("Filter settled"));
+    }
   }
 
   if (flags.alarmActive) {
@@ -630,6 +648,16 @@ bool ApaDose::collectSample(unsigned long now, char prefix) {
 void ApaDose::manageFeedbackSampling() {
   unsigned long now = millis();
 
+  // If the filter stops between a dose and the end of its "after" measurement, the probe sits
+  // in still water and the result says nothing about the dose. Discard it: no failure or
+  // wrong-direction count, no efficiency / adaptive-PB learning. The next dose is judged normally.
+  if ((feedback.phase == FB_WAITING || feedback.phase == FB_MEASURING_AFTER) &&
+      filterPumpRunning != nullptr && !filterPumpRunning()) {
+    feedback.phase = FB_IDLE;
+    sendStatus(onStatusMessage, F("Feedback skipped"));
+    return;
+  }
+
   if (feedback.phase == FB_MEASURING_BEFORE && (long)(now - feedback.nextSampleTime) >= 0) {
     if (collectSample(now, 'B')) {
       feedback.valueBeforeDose = feedback.sampleSum / feedback.targetSamples;
@@ -644,6 +672,7 @@ void ApaDose::manageFeedbackSampling() {
 #endif
       if (flags.dosingActive) return;
       if (filterPumpRunning != nullptr && !filterPumpRunning()) return;
+      if (isFilterSettling())                                   return;  // pump restarted while sampling
       if (externalStop      != nullptr && externalStop())       return;
       if (externalStopClearedAt != 0)                           return;
       // Re-check the same interlock shouldStartDosing() checked when this
@@ -1228,6 +1257,7 @@ bool ApaDose::triggerShock(uint16_t targetORP, uint8_t maxDurationHours, float c
   if (dosingType != DOSE_CL)                              return false;  // CL instances only
   if (filterPumpRunning == nullptr)                        return false;  // filter callback required
   if (!filterPumpRunning())                                return false;  // filter must be running
+  if (isFilterSettling())                                  return false;  // probe not yet in circulated water
   if (externalStop != nullptr && externalStop())           return false;  // external stop active
   if (flags.alarmActive)                                   return false;  // active alarm blocks shock
   if (flags.dosingActive || flags.primingActive)           return false;  // something already running
@@ -1409,6 +1439,10 @@ void ApaDose::manageScheduledDose() {
   if (_schedDaysRemaining == 0 &&
       t.hour == _schedHour && t.minute == _schedMinute) {
     float eff = isnan(_schedThreshold) ? setpoint : _schedThreshold;
+    // A threshold check reads the probe — wait out the filter settle (retried every
+    // update() within this minute). Fixed-amount doses (threshold 0, no sensor) don't wait.
+    bool usesProbe = (eff != 0.0f) && (readSensor != nullptr);
+    if (usesProbe && isFilterSettling()) return;
     bool condMet = (eff == 0.0f) ||
                    (readSensor == nullptr) ||
                    (dosesUp() ? sensorValue < eff : sensorValue > eff);
@@ -1514,6 +1548,40 @@ void ApaDose::setPhPump(ApaDose* phPump) {
   if (phPump != nullptr) phPump->_linkedPeer = this;   // reverse link -- see _linkedPeer's own comment
 }
 void ApaDose::setCrossSettleMinutes(uint8_t minutes) { _crossSettleMinutes = minutes; }
+
+// ---------------------------------------------------------------------------
+// Filter restart settle
+// ---------------------------------------------------------------------------
+// _filterOnSince: 0 = filter off, 1 = settled, anything else = millis() of the last filter
+// start. Switching to "settled" once the time is up keeps a pump that runs for weeks from
+// looking "just started" again when millis() wraps (every ~49.7 days).
+static constexpr unsigned long FILTER_ON_OFF     = 0;
+static constexpr unsigned long FILTER_ON_SETTLED = 1;
+
+void ApaDose::setFilterSettleMinutes(uint8_t minutes) {
+  _filterSettleMinutes = min(minutes, FILTER_SETTLE_MAX_MIN);
+}
+
+void ApaDose::trackFilterSettle() {
+  if (filterPumpRunning == nullptr) return;
+  if (!filterPumpRunning()) {
+    _filterOnSince         = FILTER_ON_OFF;
+    flags.filterSettleSent = false;   // next start announces itself again
+    return;
+  }
+  unsigned long now = millis();
+  if (_filterOnSince == FILTER_ON_OFF) {
+    _filterOnSince = (now > FILTER_ON_SETTLED) ? now : FILTER_ON_SETTLED + 1;  // never a sentinel
+  } else if (_filterOnSince != FILTER_ON_SETTLED &&
+             now - _filterOnSince >= (unsigned long)_filterSettleMinutes * 60000UL) {
+    _filterOnSince = FILTER_ON_SETTLED;
+  }
+}
+
+bool ApaDose::isFilterSettling() const {
+  return _filterOnSince > FILTER_ON_SETTLED &&
+         millis() - _filterOnSince < (unsigned long)_filterSettleMinutes * 60000UL;
+}
 
 void ApaDose::setEfficiencyThreshold(uint8_t pct) {
   _efficiencyThresholdPct = pct;

@@ -97,7 +97,7 @@ RTC_DS3231        rtc;
 // --- APA-Dose pumps ---
 // Each instance must have a unique EEPROM base address, spaced by sizeof(ConfigData).
 ApaDose phPump(PIN_PH_PUMP);                                                // EEPROM 192 (default)
-ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 212
+ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 217
 
 float getpH()  { return cachedpH; }
 float getORP() { return cachedORP; }

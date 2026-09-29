@@ -67,11 +67,11 @@ const uint8_t PIN_SHOCK_BUTTON = 4;   // shock trigger — INPUT_PULLUP
 
 // Each ApaDose instance requires a unique EEPROM base address, spaced by
 // sizeof(ConfigData). Without unique addresses all pumps would share the same
-// 20 bytes and corrupt each other's saved configuration on every boot.
+// 25 bytes and corrupt each other's saved configuration on every boot.
 ApaDose    phPump  (PIN_PH_PUMP,   APA_DOSE_EEPROM_ADDRESS);                           // EEPROM 192
-ApaDose    clPump  (PIN_CL_PUMP,   APA_DOSE_EEPROM_ADDRESS +     sizeof(ConfigData));  // EEPROM 212
-ApaDose    flocPump(PIN_FLOC_PUMP, APA_DOSE_EEPROM_ADDRESS + 2 * sizeof(ConfigData));  // EEPROM 232
-ApaDose    algiPump(PIN_ALGI_PUMP, APA_DOSE_EEPROM_ADDRESS + 3 * sizeof(ConfigData));  // EEPROM 252
+ApaDose    clPump  (PIN_CL_PUMP,   APA_DOSE_EEPROM_ADDRESS +     sizeof(ConfigData));  // EEPROM 217
+ApaDose    flocPump(PIN_FLOC_PUMP, APA_DOSE_EEPROM_ADDRESS + 2 * sizeof(ConfigData));  // EEPROM 242
+ApaDose    algiPump(PIN_ALGI_PUMP, APA_DOSE_EEPROM_ADDRESS + 3 * sizeof(ConfigData));  // EEPROM 267
 RTC_DS3231 rtc;
 
 // --- Sensor bridges ---

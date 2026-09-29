@@ -45,7 +45,7 @@ const uint8_t PIN_SHOCK_BUTTON = 4;  // dedicated shock trigger
 //   3rd pump → 236  (192 + 44)   APA_DOSE_EEPROM_ADDRESS + 2*sizeof(ConfigData)
 //   4th pump → 258  (192 + 66)   APA_DOSE_EEPROM_ADDRESS + 3*sizeof(ConfigData)
 ApaDose phPump(PIN_PH_PUMP);                                                // EEPROM 192
-ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 212
+ApaDose clPump(PIN_CL_PUMP, APA_DOSE_EEPROM_ADDRESS + sizeof(ConfigData)); // EEPROM 217
 
 float getpH()  { return 7.2; /* replace with phSensor.getPH()   */ }
 float getORP() { return 620; /* replace with orpSensor.getORP() */ }
@@ -120,6 +120,13 @@ void setup() {
   // Both disabled by default. Uncomment to enable (requires both pump instances).
   // clPump.setPhPump(&phPump);          // register the link — activates Option J automatically
   // clPump.setCrossSettleMinutes(15);   // Option A: hold CL 15 min after pH doses (0 = off)
+
+  // --- Filter restart settle (recommended when the filter pump runs on a timer) ---
+  // While the filter pump is off, the water around the probes stands still in the pipe. After
+  // each pump start, wait until fresh pool water reaches the probes before dosing on a reading.
+  // Manual doses and priming are not held. 10 min suits most home pools; 0 = off (default).
+  // phPump.setFilterSettleMinutes(10);
+  // clPump.setFilterSettleMinutes(10);
 
   // --- Inter-pump lockout (always active, no configuration needed) ---
   // After either pump doses, ALL pump instances wait 90 seconds before the next dose.

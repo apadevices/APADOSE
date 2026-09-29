@@ -7,7 +7,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.17.8** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.18.0** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
@@ -37,6 +37,7 @@ Part of the **APA Devices** product family.
 - **Setpoint range enforcement** — pH 6.8 – 7.8 and ORP 400 – 850 mV enforced on every write; out-of-range values rejected before reaching EEPROM
 - **Inter-pump chemical lockout** — 90-second enforced gap after any pump instance doses; prevents incompatible chemicals meeting at the same pipe inlet
 - **Startup blackout** — optional N-minute dosing hold after power-on (`blackoutMinutes` parameter in `begin()`); gives electrochemical sensors time to stabilize before the first dose decision; `isInStartupBlackout()` exposes the state for display
+- **Filter restart settle** — optional wait after every filtration pump start (`setFilterSettleMinutes(10)`); the water standing in the pipe while the pump was off is not pool water, so probe-based dosing (proportional, shock, scheduled with a threshold) waits until circulated water reaches the probe — recommended whenever the filter pump runs on a timer; fixed-amount doses (manual, priming, sensor-less schedules) are not held; `isFilterSettling()` exposes the state; off by default
 
 **Flexibility**
 
@@ -237,8 +238,9 @@ Most safety features are always active with no configuration required. Two featu
 
 | Feature | Behaviour |
 |---------|-----------|
-| **Filtration interlock** | Dosing is blocked when the filter pump is off. A running dose stops immediately if the filter cuts out mid-dose. **Requires a `FilterCallback` passed to `begin()`; inactive when the no-filter overload is used.** |
+| **Filtration interlock** | Dosing is blocked when the filter pump is off. A running dose stops immediately if the filter cuts out mid-dose. If the filter stops before a dose's result has been measured, that result is discarded (`"Feedback skipped"`) instead of being judged from still water. **Requires a `FilterCallback` passed to `begin()`; inactive when the no-filter overload is used.** |
 | **External stop** | An optional callback registered via `setExternalStopCallback()` can block all dosing from any external system — maintenance mode, backwash cycle, pool cover, or a signal from a filtration controller. A running dose stops the instant the callback returns `true`. After the signal clears, a **mandatory 5-minute settling time** (`EXTERNAL_STOP_RESUME_MS`) must pass before the next dose is allowed — this prevents a brief dose from firing while an operator is still toggling between filtration modes or water is still flowing through a diverted outlet. Priming is exempt. |
+| **Filter restart settle** | Optional wait (0 – 60 min) after every filter pump start — and after boot while the pump runs — before any dosing decision that reads the probe. Water standing in the pipe while the pump was off is not representative of the pool. Enabled with `setFilterSettleMinutes(n)`; default 0 (off). See [Filter restart settle](#filter-restart-settle--when-your-filter-pump-runs-on-a-timer). |
 | **Startup blackout** | Optional delay (0 – 60 min) after boot before the first dose. Prevents overdosing after a warm restart when the water chemistry is still in transition. Enabled by passing a non-zero `blackoutMinutes` to `begin()`; default is 0 (disabled). |
 | **Safety band** | If the sensor drifts beyond `min(band × 1.5, hardCap)` from setpoint, `ALARM_SAFETY_BAND` fires and dosing stops. The check runs every 10 s via the sensor read cycle — not only when a dose is about to start. Clears automatically when the sensor recovers. Hard caps: **±1.0 pH** · **±150 mV ORP**. |
 | **Wrong direction detection** | If the sensor moves the wrong way on 3 consecutive cycles, `ALARM_WRONG_DIRECTION` fires. Catches wrong chemical installed or reversed pump wiring before significant harm occurs. |
@@ -255,6 +257,49 @@ Most safety features are always active with no configuration required. Two featu
 | **Shock interlock** | While `triggerShock()` is running on a chlorine pump, all other `ApaDose` instances are held immediately — `"Held:shock active"` fires once per held instance. When shock ends all instances resume automatically. This prevents pH acid from being dosed into a high-ORP pool mid-shock. |
 | **Post-shock safety band suppression** | After shock completes, the safety band alarm is suppressed for the cooldown window (default 24 h, max 48 h) while elevated ORP normalizes. Without suppression, the expected post-shock ORP level would trigger a false `ALARM_SAFETY_BAND` within minutes of stopping. `"Post-shock normal"` fires when the window expires. |
 | **Over-setpoint protection** | If the sensor stays on the wrong side of setpoint for more than 30 minutes, `ALARM_OVER_SETPOINT` fires. The threshold mirrors the dead-band width on the opposite side of the setpoint — the same `W` that defines the dosing entry boundary. With dead-band disabled (`W = 0`) any persistent over-setpoint triggers it. Auto-clears when the reading returns to the dosing zone — no ACK needed. Cost: 4 bytes SRAM per instance. |
+
+
+### Filter restart settle — when your filter pump runs on a timer
+
+**The problem.** Most pools run the filtration pump only part of the day. While the pump is off,
+the water in the pipe around your pH/ORP probe stands still — it is no longer pool water. When the
+pump starts again, the first readings come from that old pipe water, and only after a few minutes
+does fresh pool water reach the probe. A dose decided on those first readings can be wrong.
+
+**The fix — one line in `setup()`:**
+
+```cpp
+phPump.setFilterSettleMinutes(10);   // wait 10 min after every filter pump start
+clPump.setFilterSettleMinutes(10);   // set it on each pump that has a probe
+```
+
+After every filter pump start (and after power-up while the pump is running), the library waits
+that long before it makes any dosing decision based on the probe. Nothing else changes.
+
+**How long?** 10 minutes suits most home pools. Use more for long pipe runs between the pool and
+the probe, less for a probe right next to the pump. `0` switches the feature off (the default).
+
+| Dosing type | Waits for the settle? | Why |
+|-------------|:---------------------:|-----|
+| Automatic proportional dosing | **Yes** | Every decision reads the probe |
+| Shock — `triggerShock()` | **Yes** | Needs the real ORP to set its target |
+| Scheduled dose with a threshold — `setScheduledDose()` | **Yes** | The threshold check reads the probe |
+| Manual dose — `triggerManualDose()` | No | Fixed amount chosen by the operator |
+| Scheduled dose on a sensor-less pump, or threshold `0.0` | No | Fixed amount, probe not used |
+| Priming — `triggerPrime()` | No | Bypasses all checks by design |
+
+- **Status messages:** `"Filter settling"` when the wait starts, `"Filter settled"` when dosing may resume.
+- **Display:** `isFilterSettling()` returns `true` during the wait — e.g. show "settling" on your LCD.
+- **Requires** a `FilterCallback` in `begin()` — without one the library cannot see the pump start.
+- **Scheduled doses:** a scheduled dose fires only during its own minute. If that minute falls
+  inside the settle, the dose is skipped for that day — schedule it at least the settle time after
+  your filter pump's start time.
+- **Keep filtration slots at least ~1 hour.** Each dose is checked by readings taken minutes
+  later (a full cycle takes 8 – 26 min). If the pump stops before that check, the result is
+  discarded (`"Feedback skipped"`) — so with very short slots the library rarely gets to verify
+  its doses or learn from them.
+- **Startup blackout** (`blackoutMinutes` in `begin()`) is a different thing: it gives the probe
+  electronics time to warm up after power-on. Both can be used together; the longer one wins.
 
 ---
 
@@ -352,6 +397,8 @@ void setup() {
   // Normal on first install — returns false only when no valid config exists yet or EEPROM is corrupt
   if (!phPump.begin(getpH, filterRunning, DOSE_PH, PH_MINUS, 20, 6))
     Serial.println("No saved config — defaults loaded");
+  // Filter pump on a timer? Wait 10 min after each pump start before dosing:
+  // phPump.setFilterSettleMinutes(10);
 }
 
 void loop() {
@@ -407,9 +454,9 @@ Each `ApaDose` instance is a fully independent state machine with its own dosing
 #include <APADOSE.h>
 
 ApaDose phPump  (PIN_PH,   APA_DOSE_EEPROM_ADDRESS);
-ApaDose clPump  (PIN_CL,   APA_DOSE_EEPROM_ADDRESS +     sizeof(ConfigData));  // EEPROM 212
-ApaDose flocPump(PIN_FLOC, APA_DOSE_EEPROM_ADDRESS + 2 * sizeof(ConfigData));  // EEPROM 232
-ApaDose algiPump(PIN_ALGI, APA_DOSE_EEPROM_ADDRESS + 3 * sizeof(ConfigData));  // EEPROM 252
+ApaDose clPump  (PIN_CL,   APA_DOSE_EEPROM_ADDRESS +     sizeof(ConfigData));  // EEPROM 217
+ApaDose flocPump(PIN_FLOC, APA_DOSE_EEPROM_ADDRESS + 2 * sizeof(ConfigData));  // EEPROM 242
+ApaDose algiPump(PIN_ALGI, APA_DOSE_EEPROM_ADDRESS + 3 * sizeof(ConfigData));  // EEPROM 267
 
 void loop() {
   phPump.update();
@@ -419,7 +466,7 @@ void loop() {
 }
 ```
 
-Each pump's EEPROM configuration block is 20 bytes (`sizeof(ConfigData)`). The four-pump layout above occupies addresses 192 – 271, safely clear of the APAPHX2 sensor library (128 – 177).
+Each pump's EEPROM configuration block is 25 bytes (`sizeof(ConfigData)`). The four-pump layout above occupies addresses 192 – 291, safely clear of the APAPHX2 sensor library (128 – 177).
 
 > **Inter-pump lockout:** After any pump instance completes a dose, all other instances wait 90 seconds before starting their next dose. This prevents acid and chlorine from being injected back-to-back at the same pipe inlet — mixing them there produces chlorine gas. If your second pump seems slow to react after the first one doses, this is why — it is working as intended.
 
@@ -485,7 +532,7 @@ Optional parameters:
 
 The threshold direction is resolved automatically: for a `PH_MINUS` pump, `7.4` means "skip if pH ≤ 7.4"; for a `PH_PLUS` or `DOSE_CL` pump, `7.4` means "skip if pH ≥ 7.4". No direction parameter needed.
 
-All standard safety guards apply — filtration interlock, external stop, tank-empty check, daily dose limit, inter-pump lockout, and active alarm block all prevent the dose from firing, exactly as for `triggerManualDose()`. The scheduled dose is most useful for sensor-less pumps (algaecide, flocculant) where proportional control does not apply.
+All standard safety guards apply — filtration interlock, external stop, tank-empty check, daily dose limit, inter-pump lockout, and active alarm block all prevent the dose from firing, exactly as for `triggerManualDose()`. A scheduled dose that uses a threshold also waits for the [filter restart settle](#filter-restart-settle--when-your-filter-pump-runs-on-a-timer) — schedule it at least the settle time after your filter pump starts. The scheduled dose is most useful for sensor-less pumps (algaecide, flocculant) where proportional control does not apply.
 
 ### Priming — filling dry pipes
 
@@ -567,6 +614,7 @@ Call setup methods in this order — order matters on first boot:
 3. setRTCCallback()             optional — enables time-based scheduling
 4. setDosingWindow()            optional — restrict dosing to specific hours
 5. setExternalStopCallback()    optional — block dosing from external conditions (maintenance, backwash…)
+   setFilterSettleMinutes()     optional — wait after each filter pump start (recommended with a timed pump)
 6. setCallbacks()               register alarm/status callbacks BEFORE begin()
 7. begin()                      connect sensor, set type + direction, load EEPROM, start library
                                 returns false if EEPROM data was corrupt — defaults are used, safe to continue
