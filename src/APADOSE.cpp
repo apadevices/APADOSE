@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.18.0
+ * Version: 3.18.1
  * Author: kecup@vazac.eu (APA Devices)
  * Date: September 2026
  */
@@ -399,40 +399,15 @@ void ApaDose::manageProportionalDosing() {
     }
   }
 
-  if (startupBlackoutMinutes > 0) {
-    if ((now - startupTime) < (unsigned long)startupBlackoutMinutes * 60000UL) {
-      if (!flags.blackoutMessageSent) {
-        sendStatus(onStatusMessage, F("Blackout active"));
-        flags.blackoutMessageSent = true;
-      }
-      return;
-    }
-    startupBlackoutMinutes = 0;
-    sendStatus(onStatusMessage, F("Dosing enabled"));
-  }
-
-  // Filter restart settle — hold new probe-based doses until circulated water reaches the
-  // probe. Never blocks a pulse already running (its stop logic below must still run).
-  if (!flags.dosingActive) {
-    if (isFilterSettling()) {
-      if (!flags.filterSettleSent) {
-        sendStatus(onStatusMessage, F("Filter settling"));
-        flags.filterSettleSent = true;
-      }
-      return;
-    }
-    if (flags.filterSettleSent) {
-      flags.filterSettleSent = false;
-      sendStatus(onStatusMessage, F("Filter settled"));
-    }
-  }
-
-  if (flags.alarmActive) {
-    if (flags.dosingActive) stopDosingPulse();
-    return;
-  }
-
+  // A running pulse (proportional, manual or scheduled) is supervised BEFORE any of the holds
+  // below: a hold that returns early (startup blackout, filter settle, ...) must never keep a
+  // pump running past its time. Before 3.18.1 this block sat below the blackout check, so a
+  // manual dose started during the blackout ran until the blackout ended.
   if (flags.dosingActive) {
+    if (flags.alarmActive) {
+      stopDosingPulse();
+      return;
+    }
     if (filterPumpRunning != nullptr && !filterPumpRunning()) {
       stopDosingPulse();
       sendStatus(onStatusMessage, F("Stop:filter off"));
@@ -451,6 +426,34 @@ void ApaDose::manageProportionalDosing() {
     }
     return;
   }
+
+  if (startupBlackoutMinutes > 0) {
+    if ((now - startupTime) < (unsigned long)startupBlackoutMinutes * 60000UL) {
+      if (!flags.blackoutMessageSent) {
+        sendStatus(onStatusMessage, F("Blackout active"));
+        flags.blackoutMessageSent = true;
+      }
+      return;
+    }
+    startupBlackoutMinutes = 0;
+    sendStatus(onStatusMessage, F("Dosing enabled"));
+  }
+
+  // Filter restart settle — hold new probe-based doses until circulated water reaches the
+  // probe. (A running pulse was already supervised above.)
+  if (isFilterSettling()) {
+    if (!flags.filterSettleSent) {
+      sendStatus(onStatusMessage, F("Filter settling"));
+      flags.filterSettleSent = true;
+    }
+    return;
+  }
+  if (flags.filterSettleSent) {
+    flags.filterSettleSent = false;
+    sendStatus(onStatusMessage, F("Filter settled"));
+  }
+
+  if (flags.alarmActive) return;
 
   if (feedback.phase == FB_WAITING && (long)(now - feedback.nextSampleTime) >= 0) {
     startAfterDosingMeasurements();

@@ -1,6 +1,6 @@
 ﻿# APA-Dose Library — API Reference
 
-**Version**: 3.18.0  
+**Version**: 3.18.1  
 **File**: `APADOSE.h` / `APADOSE.cpp`
 
 ---
@@ -272,8 +272,8 @@ decision that reads the probe.
   longer one wins.
 
 ```cpp
-phPump.setFilterSettleMinutes(10);   // typical home pool
-clPump.setFilterSettleMinutes(10);
+phPump.setFilterSettleMinutes(5);    // typical home pool
+clPump.setFilterSettleMinutes(5);
 ```
 
 ### `setPhPump()` / `setCrossSettleMinutes()`

@@ -7,7 +7,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.18.0** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.18.1** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
@@ -37,7 +37,7 @@ Part of the **APA Devices** product family.
 - **Setpoint range enforcement** — pH 6.8 – 7.8 and ORP 400 – 850 mV enforced on every write; out-of-range values rejected before reaching EEPROM
 - **Inter-pump chemical lockout** — 90-second enforced gap after any pump instance doses; prevents incompatible chemicals meeting at the same pipe inlet
 - **Startup blackout** — optional N-minute dosing hold after power-on (`blackoutMinutes` parameter in `begin()`); gives electrochemical sensors time to stabilize before the first dose decision; `isInStartupBlackout()` exposes the state for display
-- **Filter restart settle** — optional wait after every filtration pump start (`setFilterSettleMinutes(10)`); the water standing in the pipe while the pump was off is not pool water, so probe-based dosing (proportional, shock, scheduled with a threshold) waits until circulated water reaches the probe — recommended whenever the filter pump runs on a timer; fixed-amount doses (manual, priming, sensor-less schedules) are not held; `isFilterSettling()` exposes the state; off by default
+- **Filter restart settle** — optional wait after every filtration pump start (`setFilterSettleMinutes(5)`); the water standing in the pipe while the pump was off is not pool water, so probe-based dosing (proportional, shock, scheduled with a threshold) waits until circulated water reaches the probe — recommended whenever the filter pump runs on a timer; fixed-amount doses (manual, priming, sensor-less schedules) are not held; `isFilterSettling()` exposes the state; off by default
 
 **Flexibility**
 
@@ -269,14 +269,14 @@ does fresh pool water reach the probe. A dose decided on those first readings ca
 **The fix — one line in `setup()`:**
 
 ```cpp
-phPump.setFilterSettleMinutes(10);   // wait 10 min after every filter pump start
-clPump.setFilterSettleMinutes(10);   // set it on each pump that has a probe
+phPump.setFilterSettleMinutes(5);    // wait 5 min after every filter pump start
+clPump.setFilterSettleMinutes(5);    // set it on each pump that has a probe
 ```
 
 After every filter pump start (and after power-up while the pump is running), the library waits
 that long before it makes any dosing decision based on the probe. Nothing else changes.
 
-**How long?** 10 minutes suits most home pools. Use more for long pipe runs between the pool and
+**How long?** 5 minutes suits most home pools. Use more for long pipe runs between the pool and
 the probe, less for a probe right next to the pump. `0` switches the feature off (the default).
 
 | Dosing type | Waits for the settle? | Why |
@@ -397,8 +397,8 @@ void setup() {
   // Normal on first install — returns false only when no valid config exists yet or EEPROM is corrupt
   if (!phPump.begin(getpH, filterRunning, DOSE_PH, PH_MINUS, 20, 6))
     Serial.println("No saved config — defaults loaded");
-  // Filter pump on a timer? Wait 10 min after each pump start before dosing:
-  // phPump.setFilterSettleMinutes(10);
+  // Filter pump on a timer? Wait 5 min after each pump start before dosing:
+  // phPump.setFilterSettleMinutes(5);
 }
 
 void loop() {

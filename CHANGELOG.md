@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.18.1] — 2026-09-29
+
+### Fixed
+
+- **A manual or scheduled dose started during the startup blackout ran until the blackout ended.** The code that ends a running pulse sat below the startup-blackout check, which returns early while the blackout runs. `triggerManualDose()` (and `setScheduledDose()`, which uses it) does not check the blackout, so a 60 s manual dose started within `blackoutMinutes` of power-up kept the pump running for the rest of the blackout — switching the filter pump off did not stop it either, since that check sat below the blackout too. Present in every version with a startup blackout. Running pulses are now supervised (alarm stop, filter-off stop, end of pulse) before any hold, so no hold can keep a pump running past its time. Found on real hardware (APA-CONTROLLER bench test).
+- `LICENSE` restored to the APADevices contact — the 3.18.0 upload briefly published an outdated local copy.
+
+### Changed
+
+- The recommended filter restart settle in README, `docs/API.md`, the header and example 02 is now **5 minutes** (was 10) — enough for most home pools; use more for long pipe runs.
+
 ## [3.18.0] — 2026-09-29
 
 ### Added

@@ -11,7 +11,7 @@
  * - EEPROM persistent storage
  * - Hardware-agnostic callback interface
  *
- * Version: 3.18.0
+ * Version: 3.18.1
  * Author: kecup@vazac.eu (APA Devices)
  * Date: September 2026
  */
@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.18.0"
+#define APA_DOSE_VERSION "3.18.1"
 #define APA_DOSE_VERSION_MAJOR 3
 #define APA_DOSE_VERSION_MINOR 18
-#define APA_DOSE_VERSION_PATCH 0
+#define APA_DOSE_VERSION_PATCH 1
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -520,7 +520,7 @@ public:
   // a scheduled dose that uses a threshold. Fixed-amount doses are NOT held: triggerManualDose(),
   // triggerPrime(), and scheduled doses on sensor-less pumps or with threshold 0.
   // 0-60 min (FILTER_SETTLE_MAX_MIN); 0 = off (default). Needs a FilterCallback in begin().
-  // Typical: 10 min. Call in setup(); not saved to EEPROM.
+  // Typical: 5 min. Call in setup(); not saved to EEPROM.
   void setFilterSettleMinutes(uint8_t minutes);
   bool begin(SensorReadCallback sensorReader,
              FilterCallback   filter,

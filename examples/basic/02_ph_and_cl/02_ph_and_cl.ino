@@ -124,9 +124,9 @@ void setup() {
   // --- Filter restart settle (recommended when the filter pump runs on a timer) ---
   // While the filter pump is off, the water around the probes stands still in the pipe. After
   // each pump start, wait until fresh pool water reaches the probes before dosing on a reading.
-  // Manual doses and priming are not held. 10 min suits most home pools; 0 = off (default).
-  // phPump.setFilterSettleMinutes(10);
-  // clPump.setFilterSettleMinutes(10);
+  // Manual doses and priming are not held. 5 min suits most home pools; 0 = off (default).
+  // phPump.setFilterSettleMinutes(5);
+  // clPump.setFilterSettleMinutes(5);
 
   // --- Inter-pump lockout (always active, no configuration needed) ---
   // After either pump doses, ALL pump instances wait 90 seconds before the next dose.
