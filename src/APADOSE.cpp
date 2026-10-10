@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.18.1
+ * Version: 3.18.2
  * Author: kecup@vazac.eu (APA Devices)
  * Date: September 2026
  */
@@ -256,10 +256,13 @@ void ApaDose::update() {
     return;
   }
 
-  // Sensor read runs before shock check — live ORP needed for target comparison and safety ceiling.
-  if (readSensor != nullptr && millis() - lastSensorRead >= 10000UL) {
-    readSensors();
+  // Every 10 s, before the shock check (live ORP needed for target comparison and safety
+  // ceiling) and before every alarm/hold early return: the daily reset must also run while an
+  // alarm is active, or the midnight clear of ALARM_OFA / ALARM_DAILY_LIMIT never happens.
+  if (millis() - lastSensorRead >= 10000UL) {
     lastSensorRead = millis();
+    readSensors();      // no-op without a sensor
+    checkDayChange();
   }
 
   if (flags.shockActive) {
@@ -336,6 +339,71 @@ void ApaDose::readSensors() {
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Daily reset
+// ---------------------------------------------------------------------------
+
+// Called every 10 s from update(), whatever the instance is doing (alarm, shock, holds).
+// Before 3.18.2 this check sat inside manageProportionalDosing() behind its alarm and hold
+// early returns, so an active ALARM_OFA / ALARM_DAILY_LIMIT was never cleared at midnight.
+void ApaDose::checkDayChange() {
+  if (readRTCTime != nullptr) {
+    uint8_t day = readRTCTime().day;
+    if (day == lastKnownDay) return;
+    lastKnownDay = day;
+  } else if (millis() - lastDailyReset < 24UL * 60UL * 60UL * 1000UL) {
+    return;
+  }
+  dailyReset();
+}
+
+void ApaDose::dailyReset() {
+  bool eepromDirty = false;
+
+  // dOFA midnight EMA update — must run before zeroing _dofaDailyRunSec
+  if (!flags.dofaDisabled && _dofaDailyRunSec >= DOFA_MIN_DAILY_SEC) {
+    if (_dofaLearnedSec == 0) {
+      // Cold-start seeding: require at least DOFA_MIN_BASELINE_SEC so the seeded
+      // baseline is guaranteed to be ≥ the alarm-activation floor. Days with
+      // 60–299 s of run time are skipped — baseline stays 0 and isDOFALearning()
+      // stays true until a more representative day arrives.
+      if (_dofaDailyRunSec >= DOFA_MIN_BASELINE_SEC) {
+        _dofaLearnedSec = _dofaDailyRunSec;
+        eepromDirty     = true;
+      }
+    } else {
+      uint32_t upd = ((uint32_t)_dofaLearnedSec * (_dofaAdaptDays - 1) + _dofaDailyRunSec) / _dofaAdaptDays;
+      _dofaLearnedSec = (upd > 65535U) ? 65535U : (uint16_t)upd;
+      eepromDirty     = true;
+    }
+  }
+
+  // Tank daily EMA update — N=7 rolling average in decilitres
+  if (_tankCapacityL > 0) {
+    uint8_t dl = (uint8_t)constrain(dailyVolumeMl / 100.0f, 0.0f, 255.0f);
+    if (dl > 0) {
+      _dailyAvgDL = (_dailyAvgDL == 0) ? dl
+                  : (uint8_t)(((uint16_t)_dailyAvgDL * 6U + dl) / 7U);
+    }
+    eepromDirty = true;  // _tankConsumedMl must persist across power cycles
+  }
+
+  if (eepromDirty) saveConfiguration();
+
+  _dofaDailyRunSec      = 0;
+  flags.dofaWarningSent = false;
+
+  dailyDoseCount       = 0;
+  dailyVolumeMl        = 0.0f;
+  _dailyPumpRunSec     = 0;
+  flags.ofaWarningSent = false;
+  lastDailyReset       = millis();
+  // Midnight auto-clears ALARM_OFA and ALARM_DAILY_LIMIT without operator ACK —
+  // intentional: unattended systems must recover overnight without manual intervention.
+  if (alarm.currentAlarm == ALARM_DAILY_LIMIT ||
+      alarm.currentAlarm == ALARM_OFA) clearAlarm();
 }
 
 // ---------------------------------------------------------------------------
@@ -465,105 +533,11 @@ void ApaDose::manageProportionalDosing() {
 
   if (readSensor == nullptr) return;
 
-  if (readRTCTime != nullptr) {
+  // (The midnight reset is no longer here: checkDayChange() runs from update().)
+  if (flags.dosingWindowEnabled && readRTCTime != nullptr) {
     ApaDoseTime t = readRTCTime();
-    if (t.day != lastKnownDay) {
-      bool eepromDirty = false;
-
-      // dOFA midnight EMA update — must run before zeroing _dofaDailyRunSec
-      if (!flags.dofaDisabled && _dofaDailyRunSec >= DOFA_MIN_DAILY_SEC) {
-        if (_dofaLearnedSec == 0) {
-          // Cold-start seeding: require at least DOFA_MIN_BASELINE_SEC so the seeded
-          // baseline is guaranteed to be ≥ the alarm-activation floor. Days with
-          // 60–299 s of run time are skipped — baseline stays 0 and isDOFALearning()
-          // stays true until a more representative day arrives.
-          if (_dofaDailyRunSec >= DOFA_MIN_BASELINE_SEC) {
-            _dofaLearnedSec = _dofaDailyRunSec;
-            eepromDirty     = true;
-          }
-        } else {
-          uint32_t upd = ((uint32_t)_dofaLearnedSec * (_dofaAdaptDays - 1) + _dofaDailyRunSec) / _dofaAdaptDays;
-          _dofaLearnedSec = (upd > 65535U) ? 65535U : (uint16_t)upd;
-          eepromDirty     = true;
-        }
-      }
-
-      // Tank daily EMA update — N=7 rolling average in decilitres
-      if (_tankCapacityL > 0) {
-        uint8_t dl = (uint8_t)constrain(dailyVolumeMl / 100.0f, 0.0f, 255.0f);
-        if (dl > 0) {
-          _dailyAvgDL = (_dailyAvgDL == 0) ? dl
-                      : (uint8_t)(((uint16_t)_dailyAvgDL * 6U + dl) / 7U);
-        }
-        eepromDirty = true;  // _tankConsumedMl must persist across power cycles
-      }
-
-      if (eepromDirty) saveConfiguration();
-
-      _dofaDailyRunSec      = 0;
-      flags.dofaWarningSent = false;
-
-      dailyDoseCount       = 0;
-      dailyVolumeMl        = 0.0f;
-      _dailyPumpRunSec     = 0;
-      flags.ofaWarningSent = false;
-      lastKnownDay         = t.day;
-      lastDailyReset       = millis();
-      // Midnight auto-clears ALARM_OFA and ALARM_DAILY_LIMIT without operator ACK —
-      // intentional: unattended systems must recover overnight without manual intervention.
-      if (alarm.currentAlarm == ALARM_DAILY_LIMIT ||
-          alarm.currentAlarm == ALARM_OFA) clearAlarm();
-    }
-    flags.outsideDosingWindow = flags.dosingWindowEnabled &&
-                                (t.hour < dosingWindowStart || t.hour >= dosingWindowEnd);
+    flags.outsideDosingWindow = (t.hour < dosingWindowStart || t.hour >= dosingWindowEnd);
     if (flags.outsideDosingWindow) return;
-  } else {
-    if (millis() - lastDailyReset >= 24UL * 60UL * 60UL * 1000UL) {
-      bool eepromDirty = false;
-
-      // dOFA midnight EMA update — must run before zeroing _dofaDailyRunSec
-      if (!flags.dofaDisabled && _dofaDailyRunSec >= DOFA_MIN_DAILY_SEC) {
-        if (_dofaLearnedSec == 0) {
-          // Cold-start seeding: require at least DOFA_MIN_BASELINE_SEC so the seeded
-          // baseline is guaranteed to be ≥ the alarm-activation floor. Days with
-          // 60–299 s of run time are skipped — baseline stays 0 and isDOFALearning()
-          // stays true until a more representative day arrives.
-          if (_dofaDailyRunSec >= DOFA_MIN_BASELINE_SEC) {
-            _dofaLearnedSec = _dofaDailyRunSec;
-            eepromDirty     = true;
-          }
-        } else {
-          uint32_t upd = ((uint32_t)_dofaLearnedSec * (_dofaAdaptDays - 1) + _dofaDailyRunSec) / _dofaAdaptDays;
-          _dofaLearnedSec = (upd > 65535U) ? 65535U : (uint16_t)upd;
-          eepromDirty     = true;
-        }
-      }
-
-      // Tank daily EMA update — N=7 rolling average in decilitres
-      if (_tankCapacityL > 0) {
-        uint8_t dl = (uint8_t)constrain(dailyVolumeMl / 100.0f, 0.0f, 255.0f);
-        if (dl > 0) {
-          _dailyAvgDL = (_dailyAvgDL == 0) ? dl
-                      : (uint8_t)(((uint16_t)_dailyAvgDL * 6U + dl) / 7U);
-        }
-        eepromDirty = true;  // _tankConsumedMl must persist across power cycles
-      }
-
-      if (eepromDirty) saveConfiguration();
-
-      _dofaDailyRunSec      = 0;
-      flags.dofaWarningSent = false;
-
-      dailyDoseCount       = 0;
-      dailyVolumeMl        = 0.0f;
-      _dailyPumpRunSec     = 0;
-      flags.ofaWarningSent = false;
-      lastDailyReset       = millis();
-      // Midnight auto-clears ALARM_OFA and ALARM_DAILY_LIMIT without operator ACK —
-      // intentional: unattended systems must recover overnight without manual intervention.
-      if (alarm.currentAlarm == ALARM_DAILY_LIMIT ||
-          alarm.currentAlarm == ALARM_OFA) clearAlarm();
-    }
   }
 
   if (lastGoodSensorTime > 0 &&

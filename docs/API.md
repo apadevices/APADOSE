@@ -1,6 +1,6 @@
 ﻿# APA-Dose Library — API Reference
 
-**Version**: 3.18.1  
+**Version**: 3.18.2  
 **File**: `APADOSE.h` / `APADOSE.cpp`
 
 ---

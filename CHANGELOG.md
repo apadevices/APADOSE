@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.18.2] — 2026-10-10
+
+### Fixed
+
+- **The midnight reset never cleared an active `ALARM_OFA` or `ALARM_DAILY_LIMIT`.** The day-change check (daily counters, dOFA / tank learning, and the documented "midnight auto-clears ALARM_OFA and ALARM_DAILY_LIMIT without operator ACK") sat inside the proportional dosing loop, *after* its alarm early-return — so while either alarm was active the reset never ran, and dosing stayed stopped until `acknowledgeAlarm()` or a reboot. The other holds in front of it (filter off, startup blackout, filter settle, rest period) also delayed the reset to whenever they ended. Found while integrating the over-feed alarm in APA-CONTROLLER (source review).
+- **Instances without a sensor never got a daily reset** — the same check also sat after the "no sensor" return, so the daily dose count and OFA run time of a schedule-only pump kept adding up across days.
+
+### Changed
+
+- The day-change check is now `checkDayChange()` → `dailyReset()` (private), called every 10 s from `update()` before any shock, alarm or hold early return — midnight is now at most 10 s late, whatever the instance is doing. The two identical copies (RTC and millis paths) are merged into `dailyReset()`.
+- The RTC is read for the dosing window only when a window is enabled (it used to be read on every loop while dosing was idle). No API, EEPROM or RAM change.
+
 ## [3.18.1] — 2026-09-29
 
 ### Fixed
