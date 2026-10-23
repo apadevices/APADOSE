@@ -1,7 +1,7 @@
 /*
  * APA-Dose Library - Implementation
  *
- * Version: 3.18.2
+ * Version: 3.19.0
  * Author: kecup@vazac.eu (APA Devices)
  * Date: September 2026
  */
@@ -263,6 +263,10 @@ void ApaDose::update() {
     lastSensorRead = millis();
     readSensors();      // no-op without a sensor
     checkDayChange();
+    // Non-latching alarms (safety band, sensor fault, daily limit) re-check here: the other
+    // re-check sits in proportional dosing, which does not run while an alarm is active.
+    // Latching alarms return early inside — they still wait for acknowledgeAlarm().
+    if (flags.alarmActive) checkAlarmClearConditions();
   }
 
   if (flags.shockActive) {
@@ -1048,6 +1052,11 @@ void ApaDose::checkAlarmClearConditions() {
     case ALARM_OFA:
       canClear = true;  // ACK is sufficient; counter resets in clearAlarm()
       break;
+    case ALARM_DAILY_LIMIT:
+      // Clears at midnight (dailyReset()). Without this case the default would let a
+      // consumer's non-ACK acknowledgeAlarm() poll clear it while the limit still holds.
+      canClear = (maxDailyDoses == 0 || dailyDoseCount < maxDailyDoses);
+      break;
     case ALARM_OVER_SETPOINT: {
       // Same condition readSensors() already uses for its own dedicated auto-clear
       // (line ~315) -- must match exactly, or a consumer that polls acknowledgeAlarm()
@@ -1238,6 +1247,9 @@ bool ApaDose::triggerShock(uint16_t targetORP, uint8_t maxDurationHours, float c
   if (externalStop != nullptr && externalStop())           return false;  // external stop active
   if (flags.alarmActive)                                   return false;  // active alarm blocks shock
   if (flags.dosingActive || flags.primingActive)           return false;  // something already running
+  if (tankEmpty != nullptr && tankEmpty())                 return false;  // chemical tank empty (sensor)
+  if (_tankCapacityL > 0 && tankEmpty == nullptr &&
+      _tankConsumedMl >= (uint16_t)_tankCapacityL * 1000U) return false;  // chemical tank empty (estimate)
   if (currentPH  < CL_PH_MIN  || currentPH  > CL_PH_MAX)  return false;  // pH 7.0–7.6 required
   if (targetORP  < (uint16_t)SHOCK_ORP_MIN ||
       targetORP  > (uint16_t)SHOCK_ORP_MAX)               return false;  // ORP target 600–800 mV
@@ -1317,6 +1329,15 @@ void ApaDose::manageShock() {
     stopShock(F("Shock:ext stop"));
     return;
   }
+  // Only the sensor can change mid-shock — the volume estimate is updated when the shock ends.
+  if (tankEmpty != nullptr && tankEmpty()) {
+    char buf[20];
+    FSTR_TO_BUF(buf, F("Tank empty!"), 19);
+    buf[19] = '\0';
+    stopShock(F("Shock:tank empty"));
+    triggerAlarm(ALARM_TANK_EMPTY, buf);
+    return;
+  }
 
   // ORP rise check — one-shot at SHOCK_RISE_CHECK_MS scaled by pool volume (larger pools need longer)
   if (shockRiseTarget != 0 && now - shockStartTime >= (unsigned long)(SHOCK_RISE_CHECK_MS * volumeScale())) {
@@ -1360,7 +1381,8 @@ void ApaDose::stopShock(const __FlashStringHelper* msg) {
   flags.shockActive        = false;
   ApaDose::shockModeActive = false;
 
-  accumulateAndCheckOFA(elapsed);
+  // Shock run time is NOT counted toward OFA: a shock has its own caps (duration, ORP rise
+  // check, 800 mV ceiling), and an OFA raised here would replace the alarm that stopped it.
 
   if (readRTCTime != nullptr) {
     postShockEndRTC      = readRTCTime();  // shock-end wall clock; cooldown checked via toApproxHours
@@ -1447,6 +1469,8 @@ unsigned long ApaDose::getShockRemainingSeconds() const {
 
 bool ApaDose::triggerManualDose(unsigned long durationMs, unsigned long restMs) {
   if (flags.dosingActive || flags.primingActive) return false;
+  if (flags.shockActive) return false;                                       // own shock running
+  if (_linkedPeer != nullptr && _linkedPeer->flags.shockActive) return false; // coupled pH/CL peer shocking (a shock doesn't set dosingActive)
   if (flags.alarmActive && alarm.currentAlarm != ALARM_OFA) return false;
   if (durationMs == 0) return false;
   if (maxDailyDoses > 0 && dailyDoseCount >= maxDailyDoses) return false;

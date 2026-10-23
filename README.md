@@ -7,7 +7,7 @@
 **Autonomous proportional chemical dosing for swimming pool automation**  
 Part of the **APA Devices** product family.
 
-**Version 3.18.2** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
+**Version 3.19.0** &nbsp;·&nbsp; AVR &nbsp;·&nbsp; ESP &nbsp;·&nbsp; STM32 &nbsp;·&nbsp; No required dependencies
 
 ---
 
@@ -242,19 +242,19 @@ Most safety features are always active with no configuration required. Two featu
 | **External stop** | An optional callback registered via `setExternalStopCallback()` can block all dosing from any external system — maintenance mode, backwash cycle, pool cover, or a signal from a filtration controller. A running dose stops the instant the callback returns `true`. After the signal clears, a **mandatory 5-minute settling time** (`EXTERNAL_STOP_RESUME_MS`) must pass before the next dose is allowed — this prevents a brief dose from firing while an operator is still toggling between filtration modes or water is still flowing through a diverted outlet. Priming is exempt. |
 | **Filter restart settle** | Optional wait (0 – 60 min) after every filter pump start — and after boot while the pump runs — before any dosing decision that reads the probe. Water standing in the pipe while the pump was off is not representative of the pool. Enabled with `setFilterSettleMinutes(n)`; default 0 (off). See [Filter restart settle](#filter-restart-settle--when-your-filter-pump-runs-on-a-timer). |
 | **Startup blackout** | Optional delay (0 – 60 min) after boot before the first dose. Prevents overdosing after a warm restart when the water chemistry is still in transition. Enabled by passing a non-zero `blackoutMinutes` to `begin()`; default is 0 (disabled). |
-| **Safety band** | If the sensor drifts beyond `min(band × 1.5, hardCap)` from setpoint, `ALARM_SAFETY_BAND` fires and dosing stops. The check runs every 10 s via the sensor read cycle — not only when a dose is about to start. Clears automatically when the sensor recovers. Hard caps: **±1.0 pH** · **±150 mV ORP**. |
+| **Safety band** | If the sensor drifts beyond `min(band × 1.5, hardCap)` from setpoint, `ALARM_SAFETY_BAND` fires and dosing stops. The check runs every 10 s via the sensor read cycle — not only when a dose is about to start. Clears automatically within 10 s once the sensor recovers. Hard caps: **±1.0 pH** · **±150 mV ORP**. |
 | **Wrong direction detection** | If the sensor moves the wrong way on 3 consecutive cycles, `ALARM_WRONG_DIRECTION` fires. Catches wrong chemical installed or reversed pump wiring before significant harm occurs. |
 | **Ineffective dose detection** | `ALARM_INEFFECTIVE` fires when the EMA delivery ratio drops below the configured threshold (default 20%, active out of the box), when the sensor shows no response after 3 consecutive dose attempts, or when ORP fails to rise during shock. Catches empty container, blocked tube, or failed pump. |
 | **Manual dose ceiling** | `triggerManualDose()` clamps duration to 5 minutes regardless of what is passed. Prevents runaway from automation code errors. |
-| **Chemical tank empty sensor** | An optional callback registered via `setTankEmptyCallback()` fires `ALARM_TANK_EMPTY` (latching) the moment it returns `true` — e.g. a float switch or capacitive sensor wired to a dry-contact input. Blocks dosing and priming until the tank is refilled and `acknowledgeAlarm()` is called. Checked at dose-start time, not continuously, so there is no overhead during the rest period. Zero SRAM cost if unused. |
+| **Chemical tank empty sensor** | An optional callback registered via `setTankEmptyCallback()` fires `ALARM_TANK_EMPTY` (latching) the moment it returns `true` — e.g. a float switch or capacitive sensor wired to a dry-contact input. Blocks dosing, priming and shock until the tank is refilled and `acknowledgeAlarm()` is called. Checked at dose-start time and continuously during a shock (an empty tank stops the shock). Zero SRAM cost if unused. |
 | **Tank level estimation** | `setTankCapacity(litres)` enables software-only tank tracking without any hardware sensor. The library accumulates consumed volume (mL) from every dose and compares it to the configured capacity. `ALARM_TANK_EMPTY` fires when consumed ≥ capacity. If `setTankEmptyCallback()` is also registered, the hardware sensor is the sole alarm authority and estimation is suppressed — percentage display still works. `acknowledgeAlarm()` resets consumed to zero. Consumed counter and capacity are persisted to EEPROM at midnight and survive power cycles. Cost: 4 bytes SRAM + 3 bytes EEPROM per instance. Disabled by default — call `setTankCapacity()` to enable. |
-| **Daily dose limit** | Optional maximum doses per day. Enabled by passing a non-zero `maxDailyDoses` to `begin()`; default is 0 (no limit). `ALARM_DAILY_LIMIT` fires when reached and clears automatically when the counter resets — at real midnight when an RTC callback is registered, every 24 h from boot without one. No acknowledgment required; dosing resumes on its own the next day. |
-| **Stale sensor / sensor fault** | If the sensor callback returns invalid or out-of-range values continuously for 2 minutes, or returns no valid value at all for 30 minutes, `ALARM_SENSOR_FAULT` fires and dosing stops. Clears automatically when the sensor recovers — no acknowledgment required. Prevents dosing against a frozen or disconnected sensor. |
+| **Daily dose limit** | Optional maximum doses per day. Enabled by passing a non-zero `maxDailyDoses` to `begin()`; default is 0 (no limit). `ALARM_DAILY_LIMIT` fires when reached and clears automatically when the counter resets — at real midnight when an RTC callback is registered, every 24 h from boot without one. No acknowledgment required (`acknowledgeAlarm()` does not clear it while the limit still holds); dosing resumes on its own the next day. |
+| **Stale sensor / sensor fault** | If the sensor callback returns invalid or out-of-range values continuously for 2 minutes, or returns no valid value at all for 30 minutes, `ALARM_SENSOR_FAULT` fires and dosing stops. Clears automatically within 10 s once the sensor recovers — no acknowledgment required. Prevents dosing against a frozen or disconnected sensor. |
 | **NaN / infinity guard** | Every sensor reading is validated before use. A single bad value sends one status message but never corrupts averaging, never triggers a false alarm, and never crashes the state machine. |
 | **Filter-off notification** | If the filter stays off for 30 minutes, a single `"Filter off>30min"` status message fires. The operator is reminded that circulation has stopped. **Active only when a `FilterCallback` is provided to `begin()`.** |
 | **Setpoint range enforcement** | Both pH and ORP setpoints are rejected if outside safe operating bounds. pH: **6.8 – 7.8** (floor prevents dangerously acidic water; ceiling prevents scaling and chlorine inefficiency). ORP: **400 – 850 mV** (floor prevents under-chlorination; ceiling prevents harmful free-chlorine levels for bathers). Out-of-range values are rejected silently and reported via `ALARM_INVALID_PARAM`. |
 | **Inter-pump lockout** | After any pump instance completes a dose, all other instances wait 90 s before starting. Prevents back-to-back injection of incompatible chemicals at the same inlet (acid + chlorine → chlorine gas). |
-| **Shock interlock** | While `triggerShock()` is running on a chlorine pump, all other `ApaDose` instances are held immediately — `"Held:shock active"` fires once per held instance. When shock ends all instances resume automatically. This prevents pH acid from being dosed into a high-ORP pool mid-shock. |
+| **Shock interlock** | While `triggerShock()` is running on a chlorine pump, all other `ApaDose` instances are held immediately — `"Held:shock active"` fires once per held instance. When shock ends all instances resume automatically. This prevents pH acid from being dosed into a high-ORP pool mid-shock. `triggerManualDose()` is refused on the shocking pump and on its coupled pH pump (`setPhPump()`) — acid and chlorine never meet at the inlet. Pumps without a coupled peer (flocculant, algaecide) can still be dosed manually or by schedule. |
 | **Post-shock safety band suppression** | After shock completes, the safety band alarm is suppressed for the cooldown window (default 24 h, max 48 h) while elevated ORP normalizes. Without suppression, the expected post-shock ORP level would trigger a false `ALARM_SAFETY_BAND` within minutes of stopping. `"Post-shock normal"` fires when the window expires. |
 | **Over-setpoint protection** | If the sensor stays on the wrong side of setpoint for more than 30 minutes, `ALARM_OVER_SETPOINT` fires. The threshold mirrors the dead-band width on the opposite side of the setpoint — the same `W` that defines the dosing entry boundary. With dead-band disabled (`W = 0`) any persistent over-setpoint triggers it. Auto-clears when the reading returns to the dosing zone — no ACK needed. Cost: 4 bytes SRAM per instance. |
 
@@ -314,7 +314,7 @@ Alarms stop the pump immediately. Each alarm is reported through the `onAlarmTri
 | `ALARM_SAFETY_BAND` | Sensor beyond safety band | Automatic when sensor returns to safe range |
 | `ALARM_DAILY_LIMIT` | Max daily doses reached | Automatic at midnight (RTC) or after 24 h (millis) — no acknowledgment needed |
 | `ALARM_SENSOR_FAULT` | Invalid/out-of-range readings for 2 min, or no valid reading for 30 min | Automatic when sensor recovers — no acknowledgment needed |
-| `ALARM_TANK_EMPTY` | Tank empty callback returned `true` at dose-start time | Refill tank → `acknowledgeAlarm()` |
+| `ALARM_TANK_EMPTY` | Tank empty callback returned `true` at dose-start time or during a shock | Refill tank → `acknowledgeAlarm()` |
 | `ALARM_OFA` | Daily proportional run-time reached 90 % of the `setOFALimit()` ceiling **or** 2× the dOFA learned baseline | `acknowledgeAlarm()` — resets both daily counters immediately; counters also reset automatically at midnight |
 | `ALARM_OVER_SETPOINT` | Sensor on wrong side of setpoint for >30 min | Automatic when sensor returns to dosing zone — no ACK needed |
 | `ALARM_INVALID_PARAM` | Bad configuration value | Rejected silently — no alarm stays active |
@@ -500,7 +500,7 @@ if (t.weekday == 1 && t.hour == 8 && !weeklyFlocDone) {
 }
 ```
 
-`triggerManualDose()` returns `false` and does nothing when: a dose or prime is already running, an alarm is active, the filter is off (when a `FilterCallback` is provided), the external stop callback returns `true` or its 5-minute resume delay is still active, the daily dose limit is reached, or the 90-second inter-pump lockout is still in effect.
+`triggerManualDose()` returns `false` and does nothing when: a dose or prime is already running, this pump or its coupled pH/CL peer is shocking, an alarm is active, the filter is off (when a `FilterCallback` is provided), the external stop callback returns `true` or its 5-minute resume delay is still active, the daily dose limit is reached, or the 90-second inter-pump lockout is still in effect.
 
 ### Scheduled dosing — `setScheduledDose()`
 
@@ -561,11 +561,11 @@ A `"Prime done"` status message fires when the duration elapses. Priming does no
 **Two overloads:**
 
 ```cpp
-// Hobbyist — use named presets, sensible defaults (4 h max, 24 h cooldown)
+// Hobbyist — use named presets, sensible defaults (2 h max, 24 h cooldown)
 clPump.triggerShock(SHOCK_ORP_STANDARD, phPump.getProbeValue());
 
-// Pro — full control
-clPump.triggerShock(780, 3, phPump.getProbeValue(), 48);
+// Pro — full control (max hours 1–2)
+clPump.triggerShock(780, 2, phPump.getProbeValue(), 48);
 //                  ^targetORP  ^maxHours  ^currentPH  ^cooldownHours
 ```
 
@@ -582,7 +582,9 @@ clPump.triggerShock(780, 3, phPump.getProbeValue(), 48);
 - pH must be 7.0–7.6 before shock — chlorine is far more effective in this range (above 7.6, over half the free chlorine converts to the inactive OCl⁻ form)
 - Stops 10% before the target ORP — compensates for chlorine mixing lag; ORP continues rising after dosing stops
 - At 20 minutes: checks that ORP has risen ≥ 20 mV; if not, aborts with `ALARM_INEFFECTIVE` — catches an empty tank or failed pump before wasting hours
-- All other pumps are held during shock — `"Held:shock active"` fires; they resume automatically when shock ends
+- All other pumps are held during shock — `"Held:shock active"` fires; they resume automatically when shock ends; manual doses on this pump and the coupled pH pump are refused
+- Refused when the chlorine tank is empty; an empty tank (sensor) during the shock stops it with `ALARM_TANK_EMPTY`
+- Shock run time does not count toward the over-feed limit (OFA / dOFA)
 - Safety band alarm suppressed for 24 h after shock (configurable up to 48 h) — prevents false `ALARM_SAFETY_BAND` while ORP normalizes
 - With RTC: post-shock cooldown is wall-clock based and survives power cycles
 - `dailyDoseCount` is not incremented; `dailyVolumeMl` is accumulated for cost tracking

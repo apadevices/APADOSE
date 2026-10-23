@@ -1,6 +1,6 @@
 ﻿# APA-Dose Library — API Reference
 
-**Version**: 3.18.2  
+**Version**: 3.19.0  
 **File**: `APADOSE.h` / `APADOSE.cpp`
 
 ---
@@ -444,6 +444,7 @@ bool triggerPrime(unsigned long durationMs, uint8_t pwm = 0);          // 0 = us
 | External stop active | external stop callback returns `true` |
 | External stop resume delay | 5-minute settling time after external stop cleared |
 | Inter-pump lockout active | 90 s since the last dose on any instance has not elapsed |  
+| Shock running (3.19.0) | this instance, or its coupled pH/CL peer (`setPhPump()`), is shocking |
 
 If `durationMs` exceeds `MAX_MANUAL_DOSE_MS` (5 minutes), it is silently clamped and a `"Dose capped:5min"` status message is sent — the dose still runs at the capped duration.  
 The optional `restMs` parameter (default 20 min) sets the mixing wait before the next proportional dose. Pass `0` only for sensor-less pumps where `maxDailyDoses` already prevents double-dosing.
@@ -516,7 +517,9 @@ bool triggerShock(uint16_t targetORP, float currentPH,
                   uint8_t cooldownHours = SHOCK_COOLDOWN_DEFAULT_HOURS);
 ```
 
-Simplest form — uses sensible defaults (4 h maximum duration, 24 h post-shock cooldown).
+Simplest form — uses sensible defaults (2 h maximum duration, 24 h post-shock cooldown).
+
+Refused (returns `false`) when the tank is empty (tank sensor, or the volume estimate when no sensor is registered). While the shock runs, a tank sensor reporting empty stops it with `ALARM_TANK_EMPTY` (`"Shock:tank empty"`). Manual doses on this pump and its coupled pH pump are refused until the shock ends.
 
 ```cpp
 // Weekly maintenance shock — target 750 mV, current pH from the pH pump
@@ -546,13 +549,13 @@ Full control over duration and cooldown window.
 | Parameter | Type | Constraints | Description |
 |-----------|------|-------------|-------------|
 | `targetORP` | `uint16_t` | 600–800 mV | ORP target in mV; use named presets for clarity |
-| `maxDurationHours` | `uint8_t` | 1–4; clamped to 4 h | Maximum active dosing time before auto-stop |
+| `maxDurationHours` | `uint8_t` | 1–2; clamped to 2 h | Maximum active dosing time before auto-stop |
 | `currentPH` | `float` | 7.0–7.6 | Current pH; pass `phPump.getProbeValue()` |
 | `cooldownHours` | `uint8_t` | 1–48; clamped to 48 h | Post-shock safety band suppression window; default 24 h |
 
 ```cpp
-// Pro: 3 h maximum, 48 h cooldown (RTC-backed, survives power cycle)
-clPump.triggerShock(780, 3, phPump.getProbeValue(), 48);
+// Pro: 2 h maximum, 48 h cooldown (RTC-backed, survives power cycle)
+clPump.triggerShock(780, 2, phPump.getProbeValue(), 48);
 ```
 
 ### Return value and entry guards
@@ -766,9 +769,9 @@ Protects against chemical over-dosing by tracking how many minutes each pump has
 
 **Alarm recovery:** `acknowledgeAlarm()` resets the daily counter immediately and dosing resumes. At midnight (or after 24 h without an RTC) the counter resets automatically so unattended systems recover the next day without operator attention.
 
-**What counts toward OFA:** proportional dosing pulses and shock dosing.
+**What counts toward OFA:** proportional dosing pulses only.
 
-**What does NOT count:** `triggerManualDose()` (manual doses are intentional operator actions, always permitted even under `ALARM_OFA`) and `triggerPrime()`.
+**What does NOT count:** `triggerManualDose()` (manual doses are intentional operator actions, always permitted even under `ALARM_OFA`), `triggerShock()` (since 3.19.0 — a shock has its own caps) and `triggerPrime()`.
 
 **Choosing a starting limit:** 20–30 minutes is a typical starting point for a 20 m³ residential pool. Watch `getOFAPct()` over the first week — if it consistently reaches 80–90 % while pool chemistry is good, the limit is too tight; raise it. If it barely reaches 30 %, the limit is generous and you have headroom.
 
@@ -1239,13 +1242,15 @@ enum ApaDoseAlarm {
 |-------|----------|---------|----------|
 | `ALARM_WRONG_DIRECTION` | Yes | Sensor moves opposite way on 3 consecutive cycles | Fix chemical or wiring → `acknowledgeAlarm()` |
 | `ALARM_INEFFECTIVE` | Yes | EMA delivery ratio drops below threshold (default 20%), 3 consecutive failed feedback cycles, or ORP did not rise during shock | Fix pump or supply → `acknowledgeAlarm()` |
-| `ALARM_SAFETY_BAND` | No | Sensor beyond `min(band × 1.5, hardCap)` from setpoint | Automatic when sensor recovers |
+| `ALARM_SAFETY_BAND` | No | Sensor beyond `min(band × 1.5, hardCap)` from setpoint | Automatic within 10 s when sensor recovers |
 | `ALARM_INVALID_PARAM` | No | Bad configuration value | Automatic rejection, no change applied |
-| `ALARM_DAILY_LIMIT` | No | `maxDailyDoses` reached | Automatic at midnight (RTC) or after 24 h (millis) |
-| `ALARM_SENSOR_FAULT` | No | Sensor reading out-of-range or NaN for >2 min, or no valid reading for >30 min | Automatic when sensor recovers |
-| `ALARM_TANK_EMPTY` | Yes | Tank empty callback returned `true` at dose-start time | Refill tank → `acknowledgeAlarm()` |
+| `ALARM_DAILY_LIMIT` | No | `maxDailyDoses` reached | Automatic at midnight (RTC) or after 24 h (millis); `acknowledgeAlarm()` does not clear it while the limit holds |
+| `ALARM_SENSOR_FAULT` | No | Sensor reading out-of-range or NaN for >2 min, or no valid reading for >30 min | Automatic within 10 s when sensor recovers |
+| `ALARM_TANK_EMPTY` | Yes | Tank empty callback returned `true` at dose-start time or during a shock | Refill tank → `acknowledgeAlarm()` |
 | `ALARM_OFA` | Yes | Daily proportional run time reached 90 % of fixed OFA limit or 2× dOFA learned baseline | `acknowledgeAlarm()` — resets both daily counters immediately; also resets automatically at midnight |
 | `ALARM_OVER_SETPOINT` | No | Sensor stays on wrong side of setpoint for >30 min | Automatic when sensor returns to dosing zone — no ACK needed |
+
+**Non-latching alarms** are re-checked every 10 s inside `update()` (since 3.19.0) and clear on their own once the condition is gone. Before 3.19.0 the safety band and sensor fault cleared only when `acknowledgeAlarm()` was called; sketches that poll `acknowledgeAlarm()` for them still work unchanged.
 
 ### Over-setpoint protection (`ALARM_OVER_SETPOINT`)
 

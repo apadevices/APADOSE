@@ -11,7 +11,7 @@
  * - EEPROM persistent storage
  * - Hardware-agnostic callback interface
  *
- * Version: 3.18.2
+ * Version: 3.19.0
  * Author: kecup@vazac.eu (APA Devices)
  * Date: September 2026
  */
@@ -29,10 +29,10 @@
 // #define APA_DOSE_DEBUG
 
 // Library version
-#define APA_DOSE_VERSION "3.18.2"
+#define APA_DOSE_VERSION "3.19.0"
 #define APA_DOSE_VERSION_MAJOR 3
-#define APA_DOSE_VERSION_MINOR 18
-#define APA_DOSE_VERSION_PATCH 2
+#define APA_DOSE_VERSION_MINOR 19
+#define APA_DOSE_VERSION_PATCH 0
 
 // pH sensor profile — hardcoded defaults (stored in flash, never copied to SRAM)
 constexpr float PH_SETPOINT_MIN        = 6.8f;
@@ -134,8 +134,9 @@ constexpr float SHOCK_ORP_MIN = 600.0f;
 constexpr float SHOCK_ORP_MAX = 800.0f;
 // Stop dosing this fraction before the target to compensate for Cl mixing / ORP lag.
 constexpr float SHOCK_OVERSHOOT_MARGIN = 0.10f;
-// Hard ceiling on active shock dosing duration — silently clamped.
-constexpr uint8_t SHOCK_MAX_DURATION_HOURS = 4;
+// Hard ceiling on active shock dosing duration — silently clamped. Must stay longer than the
+// ORP rise check at the largest pool (20 min × 90/20 m³ = 90 min).
+constexpr uint8_t SHOCK_MAX_DURATION_HOURS = 2;
 // Post-shock safety band suppression window. Default 24 h; max 48 h.
 constexpr uint8_t SHOCK_COOLDOWN_DEFAULT_HOURS = 24;
 constexpr uint8_t SHOCK_COOLDOWN_MAX_HOURS     = 48;
@@ -567,7 +568,7 @@ public:
 
   // Shock / super-chlorination — DOSE_CL instances only; filter callback required
   // Hobbyist: pass SHOCK_ORP_STANDARD (or SHOCK_ORP_MILD / SHOCK_ORP_AGGRESSIVE) and current pH.
-  // Pro: additionally specify max active duration (hours, clamped to 4 h) and cooldown window (hours, default 24 h, max 48 h).
+  // Pro: additionally specify max active duration (hours, clamped to 2 h) and cooldown window (hours, default 24 h, max 48 h).
   // currentPH: pass phPump.getProbeValue() — must be in CL_PH_MIN–CL_PH_MAX (7.0–7.6).
   // Returns false if any entry guard fails (see API.md for full list).
   bool triggerShock(uint16_t targetORP, float currentPH,

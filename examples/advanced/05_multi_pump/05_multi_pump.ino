@@ -16,7 +16,7 @@
  *
  * Shock / super-chlorination:
  *   Press PIN_SHOCK_BUTTON to trigger a pro-mode shock:
- *   clPump doses at full power until ORP reaches 770 mV or 3 hours elapse.
+ *   clPump doses at full power until ORP reaches 770 mV or 2 hours elapse (the library maximum).
  *   pH must be 7.0–7.6. All other pumps are held and resume automatically.
  *   With RTC registered, the 24 h post-shock cooldown is wall-clock based and
  *   survives power cycles — triggerShock() will block for the full cooldown window.
@@ -189,7 +189,7 @@ void setup() {
   // clPump.setPhPump(&phPump);          // register the link — activates Option J automatically
   // clPump.setCrossSettleMinutes(15);   // Option A: hold CL 15 min after pH doses (0 = off)
 
-  Serial.println(F("Ready. Press SHOCK button to trigger pro shock (770 mV, 3 h max, 24 h cooldown)."));
+  Serial.println(F("Ready. Press SHOCK button to trigger pro shock (770 mV, 2 h max, 24 h cooldown)."));
 }
 
 void loop() {
@@ -209,19 +209,19 @@ void loop() {
   }
   lastAckState = ackState;
 
-  // --- SHOCK button — pro API: 770 mV target, 3 h max, 24 h cooldown (RTC-backed) ---
+  // --- SHOCK button — pro API: 770 mV target, 2 h max, 24 h cooldown (RTC-backed) ---
   bool shockBtn = digitalRead(PIN_SHOCK_BUTTON);
   if (shockBtn == LOW && lastShockState == HIGH) {
     // Pro overload: triggerShock(targetORP, maxDurationHours, currentPH, cooldownHours)
-    // maxDurationHours clamped to SHOCK_MAX_DURATION_HOURS (4 h) if higher value is passed.
+    // maxDurationHours clamped to SHOCK_MAX_DURATION_HOURS (2 h) if higher value is passed.
     // cooldownHours clamped to SHOCK_COOLDOWN_MAX_HOURS (48 h) if higher value is passed.
     // With RTC registered, cooldown is wall-clock based — survives power cycles.
     // Returns false if any entry guard fails; reason arrives via status callback.
-    if (clPump.triggerShock(770, 3, getpH(), 24)) {
-      Serial.println(F("[SHOCK] Shock started — target 770 mV, max 3 h, 24 h cooldown."));
+    if (clPump.triggerShock(770, 2, getpH(), 24)) {
+      Serial.println(F("[SHOCK] Shock started — target 770 mV, max 2 h, 24 h cooldown."));
       Serial.println(F("[SHOCK] phPump, flocPump, algiPump held. Will resume automatically."));
     } else {
-      Serial.println(F("[SHOCK] Shock rejected — check: filter on? pH 7.0-7.6? ORP below 770? No alarm? Cooldown elapsed?"));
+      Serial.println(F("[SHOCK] Shock rejected — check: filter on? pH 7.0-7.6? ORP below 770? Tank not empty? No alarm? Cooldown elapsed?"));
     }
   }
   lastShockState = shockBtn;

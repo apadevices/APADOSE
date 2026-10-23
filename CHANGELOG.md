@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.19.0] — 2026-10-23
+
+### Fixed
+
+- **A manual dose on the pH pump could start while the coupled chlorine pump was shocking.** The shock hold for other pumps was applied only to proportional dosing; a shock does not count as "dosing", so `triggerManualDose()` (and `setScheduledDose()`, which uses it) on the pH pump passed the live-peer check — acid and chlorine at the same inlet. `triggerManualDose()` now refuses while the instance itself or its coupled pH/CL peer (`setPhPump()`) is shocking. This also closes a manual dose on the chlorine pump during its own shock, which briefly overrode the shock PWM. Pumps without a coupled peer (flocculant, algaecide) are not affected — a scheduled dose on them still runs during a shock. Found by source review (APA-CONTROLLER).
+- **`ALARM_SAFETY_BAND` and `ALARM_SENSOR_FAULT` did not clear by themselves**, although the README and the examples said they do: their re-check sat in proportional dosing, which does not run while an alarm is active, so they cleared only when the sketch called `acknowledgeAlarm()`. No example did — the alarm stayed until reboot. `update()` now re-checks non-latching alarms every 10 s; they clear within 10 s once the condition is gone. Latching alarms still wait for `acknowledgeAlarm()`. Sketches that poll `acknowledgeAlarm()` for non-latching alarms keep working.
+- **`ALARM_DAILY_LIMIT` was cleared by an `acknowledgeAlarm()` poll while the limit still held.** It had no case in the clear check and fell through to "can clear". It now clears only when the limit no longer holds — normally at midnight.
+- **An empty chemical tank was not noticed during a shock.** The tank check sat only in proportional dosing, which does not run during a shock — the pump ran dry until the 20-minute ORP rise check stopped it with the wrong reason (`ALARM_INEFFECTIVE`). Now `triggerShock()` refuses on an empty tank (sensor, or the volume estimate when no sensor is registered) and a running shock stops with `ALARM_TANK_EMPTY` (message `"Shock:tank empty"`) as soon as the tank sensor reports empty.
+
+### Changed
+
+- **Shock maximum duration 4 h → 2 h** (`SHOCK_MAX_DURATION_HOURS`). Values above 2 passed to the pro overload are clamped. The ORP rise check (20 min, scaled by pool volume: 90 min at 90 m³) still happens well before the limit.
+- **Shock run time no longer counts toward the fixed OFA.** A shock has its own caps (duration, ORP rise check, 800 mV ceiling); an OFA raised when a shock ended also replaced the alarm that had stopped it (e.g. the 800 mV ceiling), hiding the real cause. dOFA already excluded shock.
+- No API, EEPROM or RAM change.
+
 ## [3.18.2] — 2026-10-10
 
 ### Fixed
